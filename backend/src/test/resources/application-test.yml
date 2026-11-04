@@ -1,0 +1,17 @@
+# Тесты: профили dev,test. PostgreSQL поднимает Testcontainers (@ServiceConnection), значения ниже — выдуманные.
+oko:
+  public-origin: http://oko.test
+  admin-logins: admin
+  rater-hmac-secret: test-hmac-secret-0123456789abcdef0123456789
+  rate-limit:
+    # Лимитер проверяется отдельным юнит-тестом; здесь лимиты высокие, чтобы тесты не мешали друг другу.
+    widget-rating-per-key: 100000
+    server-rating-per-key: 100000
+    rating-per-ip: 100000
+    widget-config-per-key: 100000
+    widget-config-per-ip: 100000
+
+logging:
+  level:
+    org.testcontainers: WARN
+    com.github.dockerjava: WARN

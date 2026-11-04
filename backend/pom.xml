@@ -108,6 +108,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <!-- Юнит (*Test) и интеграционные (*IT, Testcontainers) тесты идут одним прогоном. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
                     <systemPropertyVariables>
                         <oko.contract.path>${project.basedir}/../contracts/oko-openapi.yaml</oko.contract.path>
                     </systemPropertyVariables>
