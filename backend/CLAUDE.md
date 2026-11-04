@@ -2,14 +2,28 @@
 
 Зона: Данил. Контракт: `../contracts/oko-openapi.yaml`. Схема: `../docs/db.md`, переносится в Flyway `V1__init.sql`.
 
-Стек из `docs/architecture.md`: Spring Boot 3, Spring Security, Spring Data JPA, Flyway, PostgreSQL. Версии Java и PostgreSQL, систему сборки (Maven или Gradle) и тестовые библиотеки фиксирует Данил в первом коммите каркаса. До этого этот файл дополняется.
+## Стек и команды
+
+- Java 21, Spring Boot 3.5.16 (Web, Security, Data JPA, Validation, Actuator), Flyway, PostgreSQL 17, springdoc 2.8.
+- Сборка — Maven через wrapper (`./mvnw`, Maven 3.9.16). Базовый пакет `ru.tpu.oko`.
+- Тесты: JUnit 5, Spring Boot Test, Testcontainers (PostgreSQL 17), `swagger-request-validator-core` — проверка ответов по `../contracts/oko-openapi.yaml`. Модуль `-mockmvc` этого валидатора собран под `javax.servlet`, поэтому адаптер свой: `src/test/.../support/Contract.java`.
+
+| Что | Команда (из `backend/`) |
+|---|---|
+| Все тесты (юнит `*Test` и интеграционные `*IT`, нужен Docker) | `./mvnw verify` |
+| Один класс | `./mvnw test -Dtest=RatingIntakeIT` |
+| Локальный запуск с заглушкой входа | `./mvnw spring-boot:run -Dspring-boot.run.profiles=dev` (PostgreSQL `oko/oko` на `localhost:5432`) |
+| Всё вместе (nginx + backend + PostgreSQL) | `docker compose -f ../deploy/docker-compose.yml --env-file ../deploy/.env up --build` |
+| Сгенерированная спецификация (dev) | `GET /v3/api-docs`, Swagger UI — `/swagger-ui.html` |
+
+Профили: `dev` — заглушка входа (`StubIdentityProvider`, страница `/api/v1/auth/dev-login`), Swagger, дефолтные значения `oko.*` для ноутбука; `prod` — без заглушки, JSON-логи, `/v3/api-docs` выключен, все `oko.*` из окружения. В тестах — `dev,test`.
 
 ## Структура пакетов
 
 Модули по `architecture.md`, раздел 3:
 
 ```
-app/
+ru.tpu.oko/
 ├── auth/          вход, сессия, роли, IdentityProvider (sso/, stub/)
 ├── catalog/       продукты, сервисы, владельцы, ключи, allowed_origin, widget_settings
 ├── ratings/       приём оценок — самый важный модуль
@@ -117,7 +131,7 @@ app/
 ## Миграции и БД
 
 - Схема меняется только Flyway. Применённую миграцию не правим, добавляем новую `V{n+1}`.
-- Колонки `rating_daily` — как в `docs/db.md`: `cnt`, `sum_score`. В спецификации и контракте написано `count` и `sum`. До решения Данила и Николая используем `db.md`.
+- Колонки `rating_daily` — как в `docs/db.md`: `cnt`, `sum_score` (в `architecture.md` — `count` и `sum`). До решения Данила и Николая используем `db.md`.
 - `app_user.is_admin` из `db.md` не используем: админы задаются конфигом.
 - Enum в PostgreSQL не создаём. Используем `text` с `CHECK`.
 
@@ -136,6 +150,26 @@ app/
 - отказы: БД недоступна — `503`; мониторинг недоступен — статус «нет данных», остальное работает.
 
 Перед «готово»: сборка и тесты в `backend/` зелёные. Ответы сверены со спецификацией.
+
+## Решения v1
+
+Подробности и что ещё открыто — в `docs/team/Расхождения в документах.md`.
+
+- Ключи при создании продукта автоматически не выпускаются: панель вызывает `createKey` (п. 2 расхождений).
+- `Origin` в `/widget/ratings` принимается, если это `oko.public-origin` (наш iframe) или сайт из `allowed_origin` (п. 6).
+- В `prod` без `IdentityProvider` приложение стартует, `/auth/login` отвечает 503 (п. 3).
+- Внутренняя ошибка — 500 с `code: UNAVAILABLE`, кода для неё в enum нет (п. 7).
+- Сессии в памяти приложения (MVP, один сервер): после рестарта backend все входят заново.
+- Лимиты запросов — `oko.rate-limit.*` в `application.yml`, в памяти, фиксированное окно в минуту.
+- JPA — для каталога и пользователей, `JdbcClient` — для приёма оценок (advisory lock, upsert агрегата) и `audit_log`.
+- Время берётся только из бина `Clock` (UTC, точность — микросекунды, как у `timestamptz`). День для агрегатов — `TomskTime.day()`.
+
+## Подводные камни
+
+- `Clock.tick(..., Duration.ofNanos(1000))` нельзя: его `millis()` делит на шаг в миллисекундах и падает с `ArithmeticException`. Поэтому в `TimeConfig` свой `MicrosecondClock`.
+- В интеграционных тестах не используй `csrf()` из spring-security-test: он подменяет репозиторий CSRF в общем для тестов контексте, и потом не выставляется cookie `XSRF-TOKEN`. Есть `IntegrationTest.xsrf()` — cookie и заголовок, как в настоящей панели.
+- Валидатор контракта игнорирует `additionalProperties`: со схемами `allOf` он даёт ложные ошибки. Лишние поля в ответах ловим ревью и сверкой с `/v3/api-docs`.
+- `smallint` из БД через JDBC приходит как `Integer`, в JPA-сущностях такие поля — `short`.
 
 ## Частые ошибки
 
