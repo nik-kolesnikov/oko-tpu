@@ -1,0 +1,1966 @@
+openapi: 3.0.3
+info:
+  title: ОКО ТПУ — REST API
+  version: 0.1.0-draft
+  description: |
+    Черновик API MVP по `architecture.md` и `db.md` (бэкенд-команда).
+
+    **Соглашения**
+    - Базовый путь `/api/v1` (nginx проксирует `/api/*` в Spring Boot). Все пути ниже даны относительно него.
+    - JSON, поля в `camelCase`, идентификаторы `int64`, время в ISO 8601 с часовым поясом.
+    - «День» в статистике — календарный день по Томску (`Asia/Tomsk`). Параметры `from` и `to` — даты `YYYY-MM-DD`, обе границы включительно.
+    - Панель: сессионная cookie `OKO_SESSION` после входа через SSO ТПУ. Изменяющие запросы панели защищены CSRF-токеном (заголовок `X-XSRF-TOKEN`, значение из cookie `XSRF-TOKEN`).
+    - Приём оценок: заголовок `X-Api-Key` (публичный ключ — виджет, секретный — серверы продуктов). CSRF там не применяется.
+    - Права: админ ЦЭУ видит и меняет всё, владелец — только свои продукты. Чужой продукт для владельца выглядит как `404` (не раскрываем существование), `403` — когда продукт виден, но действие запрещено (например, архивация продукта владельцем).
+    - Ошибки — всегда объект `Error`. Тексты оценок отдаются как есть, экранирование на клиенте.
+    - Пункты, помеченные «ОТКРЫТО», зависят от нерешённых вопросов из `architecture.md` (п. 11) или от договорённостей с командой мониторинга.
+servers:
+  - url: /api/v1
+    description: Относительный путь (тот же origin, что и у панели)
+
+tags:
+  - name: Авторизация
+    description: Вход через SSO ТПУ, сессия ОКО
+  - name: Дашборд
+    description: Дерево продуктов и сервисов с лампочками и средними оценками
+  - name: Продукты
+  - name: Владельцы
+  - name: Сервисы
+  - name: Ключи
+    description: Публичные и секретные API-ключи продукта
+  - name: Разрешённые сайты
+    description: Список origin для `frame-ancestors` виджета
+  - name: Настройки виджета
+  - name: Виджет
+    description: Публичные эндпоинты, которыми пользуется виджет на чужом сайте
+  - name: Приём оценок
+  - name: Статистика
+  - name: Отзывы
+  - name: Релизы
+
+security:
+  - cookieAuth: []
+
+paths:
+  # ───────────────────────── Авторизация ─────────────────────────
+  /auth/login:
+    get:
+      tags: [Авторизация]
+      operationId: login
+      summary: Начать вход через SSO ТПУ
+      description: Редирект на страницу авторизации SSO.
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          description: Относительный путь панели, куда вернуть после входа. Абсолютные URL игнорируются.
+          schema:
+            type: string
+            example: /products/12
+      responses:
+        '302':
+          description: Редирект на SSO
+          headers:
+            Location:
+              schema:
+                type: string
+
+  /auth/callback:
+    get:
+      tags: [Авторизация]
+      operationId: loginCallback
+      summary: Возврат из SSO
+      description: |
+        Обменивает `code` на токен, создаёт или обновляет запись `app_user`, выставляет cookie `OKO_SESSION`
+        и перенаправляет на `returnTo`. Запрос с `code` не логируется целиком.
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Вход выполнен, редирект в панель
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /auth/logout:
+    post:
+      tags: [Авторизация]
+      operationId: logout
+      summary: Выйти
+      responses:
+        '204':
+          description: Сессия завершена
+
+  /auth/me:
+    get:
+      tags: [Авторизация]
+      operationId: getCurrentUser
+      summary: Текущий пользователь
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ───────────────────────── Дашборд ─────────────────────────
+  /dashboard:
+    get:
+      tags: [Дашборд]
+      operationId: getDashboard
+      summary: Дерево «продукт → сервисы» для главного экрана
+      description: |
+        Админ получает все активные и приостановленные продукты, владелец — свои.
+        Средняя оценка считается за последние 30 дней по `rating_daily`.
+        Лампочка читается только из нашей таблицы статусов, мониторинг на запрос не дёргается.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ───────────────────────── Продукты ─────────────────────────
+  /products:
+    get:
+      tags: [Продукты]
+      operationId: listProducts
+      summary: Список продуктов
+      description: Админ видит все, владелец — свои. По умолчанию архивные не возвращаются.
+      parameters:
+        - name: status
+          in: query
+          description: Фильтр по статусам (можно несколько). Без параметра — `active` и `paused`.
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ProductStatus'
+          style: form
+          explode: true
+        - name: q
+          in: query
+          description: Поиск по названию (подстрока, без учёта регистра)
+          schema:
+            type: string
+            maxLength: 200
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Продукты]
+      operationId: createProduct
+      summary: Зарегистрировать продукт
+      description: |
+        Создатель автоматически становится владельцем. Вместе с продуктом создаются настройки виджета по умолчанию.
+        Админ может передать `ownerLogins` и завести продукт за команду (тогда создатель владельцем не становится,
+        если его логина нет в списке).
+
+        ОТКРЫТО: свободная регистрация (по умолчанию) или только после подтверждения админом.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCreate'
+      responses:
+        '201':
+          description: Создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Неархивный продукт с таким URL уже есть (`DUPLICATE_URL`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products/{productId}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Продукты]
+      operationId: getProduct
+      summary: Карточка продукта
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Продукты]
+      operationId: updateProduct
+      summary: Изменить продукт
+      description: |
+        Частичное обновление. Статус можно переключать между `active` и `paused`.
+        В `archived` продукт переводится только через `DELETE`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: URL занят другим неархивным продуктом (`DUPLICATE_URL`) или продукт в архиве (`CONFLICT`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Продукты]
+      operationId: archiveProduct
+      summary: Архивировать продукт
+      description: |
+        **Только админ ЦЭУ.** Мягкое удаление: статус `archived`, данные остаются. Виджет и приём оценок для продукта отключаются,
+        ключи отзываются. Повторный вызов для уже архивного продукта возвращает `204`.
+
+        ОТКРЫТО (architecture.md п. 11.2): подтвердить, что архивировать может только админ.
+      responses:
+        '204':
+          description: Архивирован
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Владельцы ─────────────────────────
+  /products/{productId}/owners:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Владельцы]
+      operationId: listOwners
+      summary: Владельцы продукта
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Владельцы]
+      operationId: addOwner
+      summary: Добавить владельца
+      description: |
+        Пользователь ищется по логину ТПУ среди тех, кто уже хотя бы раз входил в ОКО.
+        Если такого нет — `404`.
+
+        ОТКРЫТО: нужен ли поиск по справочнику ТПУ, чтобы добавлять тех, кто ещё не заходил.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login]
+              properties:
+                login:
+                  type: string
+                  example: ivanov_ii
+      responses:
+        '201':
+          description: Добавлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Пользователь уже владелец (`CONFLICT`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products/{productId}/owners/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int64
+    delete:
+      tags: [Владельцы]
+      operationId: removeOwner
+      summary: Убрать владельца
+      description: Нельзя убрать последнего владельца — `409` с кодом `LAST_OWNER`.
+      responses:
+        '204':
+          description: Удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Это последний владелец (`LAST_OWNER`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ───────────────────────── Сервисы ─────────────────────────
+  /products/{productId}/services:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Сервисы]
+      operationId: listServices
+      summary: Сервисы продукта
+      description: По умолчанию без архивных. Лампочка (`health`) берётся из последнего известного статуса.
+      parameters:
+        - name: includeArchived
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Service'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Сервисы]
+      operationId: createService
+      summary: Добавить сервис
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceCreate'
+      responses:
+        '201':
+          description: Создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Service'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Такой `monitoringRef` уже привязан к другому сервису (`DUPLICATE_MONITORING_REF`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products/{productId}/services/{serviceId}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/ServiceId'
+    patch:
+      tags: [Сервисы]
+      operationId: updateService
+      summary: Изменить сервис
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServiceUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Service'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Конфликт `monitoringRef` (`DUPLICATE_MONITORING_REF`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Сервисы]
+      operationId: archiveService
+      summary: Архивировать сервис
+      description: Мягкое удаление (статус `archived`). Оценки и статистика сервиса сохраняются.
+      responses:
+        '204':
+          description: Архивирован
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Ключи ─────────────────────────
+  /products/{productId}/keys:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Ключи]
+      operationId: listKeys
+      summary: Ключи продукта
+      description: Полный ключ не возвращается никогда, только префикс для узнавания в списке.
+      parameters:
+        - name: includeRevoked
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Ключи]
+      operationId: createKey
+      summary: Выпустить ключ
+      description: Полный ключ возвращается **один раз**, в базе хранится только SHA-256.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  $ref: '#/components/schemas/KeyType'
+      responses:
+        '201':
+          description: Выпущен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyIssued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Продукт в архиве (`CONFLICT`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products/{productId}/keys/{keyId}/reissue:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/KeyId'
+    post:
+      tags: [Ключи]
+      operationId: reissueKey
+      summary: Перевыпустить ключ
+      description: Выпускает новый ключ того же типа, а старый сразу отзывает. Новый ключ показывается один раз.
+      responses:
+        '201':
+          description: Новый ключ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyIssued'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Ключ уже отозван (`CONFLICT`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /products/{productId}/keys/{keyId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/KeyId'
+    post:
+      tags: [Ключи]
+      operationId: revokeKey
+      summary: Отозвать ключ
+      description: Идемпотентно. Приём оценок с этим ключом сразу начинает отвечать `401`.
+      responses:
+        '200':
+          description: Отозван
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Разрешённые сайты ─────────────────────────
+  /products/{productId}/origins:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Разрешённые сайты]
+      operationId: listOrigins
+      summary: Разрешённые сайты
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OriginList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Разрешённые сайты]
+      operationId: replaceOrigins
+      summary: Заменить список разрешённых сайтов
+      description: |
+        Список заменяется целиком (так проще для формы в панели). Дубликаты игнорируются.
+        Формат — схема + хост + необязательный порт, без пути и завершающего `/`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origins]
+              properties:
+                origins:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: string
+                    pattern: '^https?://[^/\s]+$'
+                    example: https://lk.tpu.ru
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OriginList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Настройки виджета ─────────────────────────
+  /products/{productId}/widget-settings:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Настройки виджета]
+      operationId: getWidgetSettings
+      summary: Настройки виджета
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetSettings'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Настройки виджета]
+      operationId: updateWidgetSettings
+      summary: Сохранить настройки виджета
+      description: Полная замена. Изменения доходят до виджета при следующей загрузке страницы.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WidgetSettingsInput'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetSettings'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Виджет (публичные) ─────────────────────────
+  /widget/frame:
+    get:
+      tags: [Виджет]
+      operationId: getWidgetFrame
+      summary: Страница iframe с формой оценки
+      description: |
+        Отдаёт HTML формы оценки с заголовком `Content-Security-Policy: frame-ancestors <разрешённые сайты продукта>`.
+        Ключ передаётся в query, потому что у `iframe src` нельзя задать заголовок.
+        Браузер сам запретит встраивание на сайте вне списка `allowed_origin`.
+
+        ОТКРЫТО: статику iframe нельзя отдавать из nginx как есть, так как CSP зависит от продукта. Нужно подтвердить с бэкендом,
+        что эту страницу отдаёт Spring Boot (или nginx получает заголовок от backend).
+      security: []
+      parameters:
+        - name: key
+          in: query
+          required: true
+          description: Публичный ключ продукта
+          schema:
+            type: string
+        - name: serviceId
+          in: query
+          description: Привязать оценки к сервису продукта
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: HTML формы
+          headers:
+            Content-Security-Policy:
+              schema:
+                type: string
+                example: frame-ancestors https://lk.tpu.ru
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: Ключ неверный, отозван или продукт не активен. Тело пустое, виджет скрывается.
+
+  /widget/config:
+    get:
+      tags: [Виджет]
+      operationId: getWidgetConfig
+      summary: Настройки для виджета
+      description: |
+        Вызывается из iframe перед показом формы. Для приостановленного или архивного продукта, а также при
+        `widgetEnabled = false` возвращает `enabled: false` без остальных полей.
+        Запросы идут с таймаутом 2 секунды, при любой ошибке виджет скрывается.
+      security:
+        - publicKey: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WidgetConfig'
+        '401':
+          $ref: '#/components/responses/InvalidKey'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  # ───────────────────────── Приём оценок ─────────────────────────
+  /widget/ratings:
+    post:
+      tags: [Приём оценок]
+      operationId: submitWidgetRating
+      summary: Оценка из виджета
+      description: |
+        Публичный ключ в `X-Api-Key`. Секретный ключ на этом эндпоинте не принимается (`401`).
+
+        Проверки по порядку: ключ существует и активен, продукт активен, `Origin` запроса, лимиты, формат и длина,
+        `serviceId` принадлежит продукту, дубликат за 14 дней (по `rater_hash`).
+        В одной транзакции вставляется строка в `rating` и обновляется `rating_daily` (строка продукта и, если указан сервис, строка сервиса).
+
+        ОТКРЫТО: iframe живёт на нашем домене, поэтому `Origin` запроса из него совпадёт с доменом ОКО, а не с сайтом продукта.
+        Сайт продукта проверяет `frame-ancestors` на `/widget/frame`; здесь достаточно убедиться, что запрос пришёл с нашего origin.
+        Если решим слать запрос прямо из `loader.js`, `Origin` сверяется с `allowed_origin`, и нужен CORS по списку продукта.
+      security:
+        - publicKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WidgetRatingRequest'
+            example:
+              score: 2
+              comment: Долго грузится расписание
+              raterId: 3f6a2c9e-7a1b-4c53-9d0e-5b1f8a2c4d77
+              serviceId: 7
+              pagePath: /schedule
+              version: 2.4.1
+      responses:
+        '201':
+          $ref: '#/components/responses/RatingAccepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidKey'
+        '403':
+          description: |
+            `ORIGIN_NOT_ALLOWED` — недопустимый `Origin`, или `PRODUCT_INACTIVE` — продукт приостановлен или в архиве
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/DuplicateRating'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /ratings:
+    post:
+      tags: [Приём оценок]
+      operationId: submitServerRating
+      summary: Оценка с сервера продукта
+      description: |
+        Секретный ключ в `X-Api-Key` (мобильное приложение, бот, CI). Лимиты мягче, чем у виджета.
+        Идентификатор оценившего (`raterId`) передаёт сам продукт, он обязателен. Сервер хранит только HMAC от него.
+        Публичный ключ на этом эндпоинте не принимается (`401`).
+      security:
+        - secretKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServerRatingRequest'
+            example:
+              score: 5
+              raterId: student-1234567
+              raterRole: student
+              serviceId: 7
+              version: 1.12.0
+      responses:
+        '201':
+          $ref: '#/components/responses/RatingAccepted'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidKey'
+        '403':
+          description: Продукт приостановлен или в архиве (`PRODUCT_INACTIVE`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          $ref: '#/components/responses/DuplicateRating'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  # ───────────────────────── Статистика ─────────────────────────
+  /products/{productId}/stats/summary:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Статистика]
+      operationId: getStatsSummary
+      summary: Сводка за период
+      description: |
+        Считается по `rating_daily`, без обращения к сырым оценкам. Без `from` и `to` — за всё время.
+        Без `serviceId` — по всему продукту (включая оценки без сервиса), с ним — только по сервису.
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ServiceFilter'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatingStats'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /products/{productId}/stats/timeseries:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Статистика]
+      operationId: getStatsTimeseries
+      summary: Динамика оценок
+      description: |
+        Точки графика. `granularity=auto`: период до 30 дней — по дням, дольше — по неделям.
+        Периоды без оценок возвращаются с `count = 0` и `average = null`, чтобы график не рвался.
+        Неделя начинается в понедельник, месяц — календарный.
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ServiceFilter'
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [auto, day, week, month]
+            default: auto
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Timeseries'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Отзывы ─────────────────────────
+  /products/{productId}/ratings:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Отзывы]
+      operationId: listRatings
+      summary: Лента оценок и отзывов
+      description: |
+        Сырые оценки, новые сверху. Личность оценившего не возвращается никому, включая админа.
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/ServiceFilter'
+        - name: minScore
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - name: maxScore
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+        - name: hasComment
+          in: query
+          description: Только оценки с текстом
+          schema:
+            type: boolean
+            default: false
+        - name: version
+          in: query
+          description: Только оценки этой версии продукта
+          schema:
+            type: string
+            maxLength: 50
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ───────────────────────── Релизы ─────────────────────────
+  /products/{productId}/releases:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+    get:
+      tags: [Релизы]
+      operationId: listReleases
+      summary: Метки релизов
+      description: Отсортированы по дате релиза, новые сверху.
+      parameters:
+        - $ref: '#/components/parameters/ServiceFilter'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Release'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Релизы]
+      operationId: createRelease
+      summary: Отметить релиз
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseInput'
+      responses:
+        '201':
+          description: Создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /products/{productId}/releases/{releaseId}:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/ReleaseId'
+    patch:
+      tags: [Релизы]
+      operationId: updateRelease
+      summary: Изменить метку релиза
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Релизы]
+      operationId: deleteRelease
+      summary: Удалить метку релиза
+      description: Метка — единственная сущность, которая удаляется физически (на оценки не влияет).
+      responses:
+        '204':
+          description: Удалена
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /products/{productId}/releases/{releaseId}/comparison:
+    parameters:
+      - $ref: '#/components/parameters/ProductId'
+      - $ref: '#/components/parameters/ReleaseId'
+    get:
+      tags: [Релизы]
+      operationId: compareAroundRelease
+      summary: Сравнение «до / после» релиза
+      description: |
+        Окна считаются на лету из `rating_daily`, не хранятся. Если у релиза задан `serviceId`, сравниваются оценки только этого сервиса.
+
+        Окно «до» — 14 дней перед днём релиза, «после» — 14 дней начиная с дня релиза.
+        Если в окно попадает другой релиз, окно обрезается по его дате (`clippedByReleaseId`).
+
+        ОТКРЫТО: в `architecture.md` описана обрезка только по следующему релизу; здесь окно «до» симметрично обрезается по предыдущему.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseComparison'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: OKO_SESSION
+      description: Сессия ОКО после входа через SSO ТПУ.
+    publicKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: Публичный ключ продукта (виджет). Не секрет.
+    secretKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+      description: Секретный ключ продукта (сервер продукта). Нельзя использовать в браузере.
+
+  parameters:
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    ServiceId:
+      name: serviceId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    ReleaseId:
+      name: releaseId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    From:
+      name: from
+      in: query
+      description: Начало периода, день по Томску, включительно
+      schema:
+        type: string
+        format: date
+    To:
+      name: to
+      in: query
+      description: Конец периода, день по Томску, включительно
+      schema:
+        type: string
+        format: date
+    ServiceFilter:
+      name: serviceId
+      in: query
+      description: Только этот сервис. Без параметра — весь продукт.
+      schema:
+        type: integer
+        format: int64
+    Page:
+      name: page
+      in: query
+      description: Номер страницы, с 1
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Ошибка валидации (`VALIDATION_ERROR`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            code: VALIDATION_ERROR
+            message: Некорректные данные
+            details:
+              - field: score
+                message: должно быть от 1 до 5
+    Unauthorized:
+      description: Нет сессии или она истекла (`UNAUTHORIZED`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Недостаточно прав (`FORBIDDEN`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Не найдено или недоступно текущему пользователю (`NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InvalidKey:
+      description: Ключ не передан, неизвестен, отозван или не того типа (`INVALID_KEY`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    DuplicateRating:
+      description: От этого оценившего за последние 14 дней уже есть оценка этого продукта (`DUPLICATE_RATING`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Превышен лимит запросов (`RATE_LIMITED`)
+      headers:
+        Retry-After:
+          description: Через сколько секунд повторить
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Сервис временно недоступен, например нет связи с БД или SSO (`UNAVAILABLE`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RatingAccepted:
+      description: Оценка принята
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [id]
+            properties:
+              id:
+                type: integer
+                format: int64
+
+  schemas:
+    # ── Общие ──
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - VALIDATION_ERROR
+            - CONFLICT
+            - DUPLICATE_URL
+            - DUPLICATE_MONITORING_REF
+            - LAST_OWNER
+            - INVALID_KEY
+            - ORIGIN_NOT_ALLOWED
+            - PRODUCT_INACTIVE
+            - DUPLICATE_RATING
+            - RATE_LIMITED
+            - UNAVAILABLE
+        message:
+          type: string
+          description: Человекочитаемое сообщение. Не содержит персональных данных и текстов оценок.
+        details:
+          type: array
+          description: Ошибки по полям (для `VALIDATION_ERROR`)
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+
+    PageMeta:
+      type: object
+      required: [page, size, totalItems, totalPages]
+      properties:
+        page:
+          type: integer
+        size:
+          type: integer
+        totalItems:
+          type: integer
+          format: int64
+        totalPages:
+          type: integer
+
+    # ── Пользователи ──
+    User:
+      type: object
+      required: [id, login, fullName]
+      properties:
+        id:
+          type: integer
+          format: int64
+        login:
+          type: string
+          description: Логин ТПУ
+          example: ivanov_ii
+        fullName:
+          type: string
+          example: Иванов Иван Иванович
+        email:
+          type: string
+          nullable: true
+
+    CurrentUser:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          required: [isAdmin]
+          properties:
+            isAdmin:
+              type: boolean
+              description: Админ ЦЭУ (определяется конфигом, в БД не хранится)
+
+    # ── Продукты и сервисы ──
+    ProductStatus:
+      type: string
+      enum: [active, paused, archived]
+
+    Product:
+      type: object
+      required: [id, name, url, status, owners, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        url:
+          type: string
+        status:
+          $ref: '#/components/schemas/ProductStatus'
+        owners:
+          type: array
+          items:
+            $ref: '#/components/schemas/User'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProductCreate:
+      type: object
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        url:
+          type: string
+          format: uri
+          description: Должен быть уникален среди неархивных продуктов (без учёта регистра)
+        ownerLogins:
+          type: array
+          description: Только для админа. Логины ТПУ владельцев (минимум один).
+          items:
+            type: string
+
+    ProductUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        url:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum: [active, paused]
+
+    ProductPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Product'
+
+    HealthStatus:
+      type: string
+      enum: [up, down, unknown]
+      description: |
+        `unknown` — нет привязки к мониторингу, данных ещё нет или они старше порога (по умолчанию 5 минут).
+        В последнем случае `checkedAt` всё равно содержит время последней известной проверки.
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/HealthStatus'
+        responseMs:
+          type: integer
+          nullable: true
+          minimum: 0
+        checkedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    Service:
+      type: object
+      required: [id, productId, name, status, health, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        productId:
+          type: integer
+          format: int64
+        name:
+          type: string
+        url:
+          type: string
+          nullable: true
+        monitoringRef:
+          type: string
+          nullable: true
+          description: Идентификатор сервиса в системе мониторинга
+        status:
+          type: string
+          enum: [active, archived]
+        health:
+          $ref: '#/components/schemas/Health'
+        createdAt:
+          type: string
+          format: date-time
+
+    ServiceCreate:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        url:
+          type: string
+          format: uri
+          nullable: true
+        monitoringRef:
+          type: string
+          nullable: true
+
+    ServiceUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        url:
+          type: string
+          format: uri
+          nullable: true
+        monitoringRef:
+          type: string
+          nullable: true
+
+    # ── Ключи и сайты ──
+    KeyType:
+      type: string
+      enum: [public, secret]
+
+    ApiKey:
+      type: object
+      required: [id, productId, type, keyPrefix, createdAt, createdBy]
+      properties:
+        id:
+          type: integer
+          format: int64
+        productId:
+          type: integer
+          format: int64
+        type:
+          $ref: '#/components/schemas/KeyType'
+        keyPrefix:
+          type: string
+          description: Начало ключа для узнавания в списке
+          example: pk_a1b2c3d4
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          $ref: '#/components/schemas/User'
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    ApiKeyIssued:
+      allOf:
+        - $ref: '#/components/schemas/ApiKey'
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: Ключ целиком. Показывается один раз, потом получить его нельзя.
+
+    OriginList:
+      type: object
+      required: [origins]
+      properties:
+        origins:
+          type: array
+          items:
+            type: string
+            example: https://lk.tpu.ru
+
+    # ── Виджет ──
+    WidgetPosition:
+      type: string
+      enum: [bottom-right, bottom-left]
+
+    WidgetSettingsInput:
+      type: object
+      required: [question, askIntervalDays, commentThreshold, position, widgetEnabled]
+      properties:
+        question:
+          type: string
+          maxLength: 200
+          default: Как вам сервис?
+        askIntervalDays:
+          type: integer
+          minimum: 1
+          maximum: 90
+          default: 14
+          description: Как часто показывать плашку одному пользователю
+        commentThreshold:
+          type: integer
+          minimum: 1
+          maximum: 5
+          default: 3
+          description: При оценке не выше порога виджет показывает поле для текста
+        position:
+          $ref: '#/components/schemas/WidgetPosition'
+        widgetEnabled:
+          type: boolean
+          default: true
+
+    WidgetSettings:
+      allOf:
+        - $ref: '#/components/schemas/WidgetSettingsInput'
+        - type: object
+          required: [updatedAt]
+          properties:
+            updatedAt:
+              type: string
+              format: date-time
+
+    WidgetConfig:
+      type: object
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
+        question:
+          type: string
+        askIntervalDays:
+          type: integer
+        commentThreshold:
+          type: integer
+        position:
+          $ref: '#/components/schemas/WidgetPosition'
+
+    # ── Приём оценок ──
+    WidgetRatingRequest:
+      type: object
+      required: [score, raterId]
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          maxLength: 500
+          nullable: true
+        raterId:
+          type: string
+          minLength: 8
+          maxLength: 128
+          description: |
+            Анонимный идентификатор браузера (случайный UUID), пока нет SSO для оценивающих.
+            Сервер хранит только HMAC от него. После подключения SSO поле игнорируется.
+        serviceId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Сервис этого же продукта
+        pagePath:
+          type: string
+          maxLength: 500
+          nullable: true
+        version:
+          type: string
+          maxLength: 50
+          nullable: true
+          description: Версия продукта, на которой поставлена оценка
+
+    ServerRatingRequest:
+      type: object
+      required: [score, raterId]
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          maxLength: 500
+          nullable: true
+        raterId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Стабильный идентификатор пользователя в продукте
+        raterRole:
+          type: string
+          enum: [student, staff, unknown]
+          default: unknown
+        serviceId:
+          type: integer
+          format: int64
+          nullable: true
+        pagePath:
+          type: string
+          maxLength: 500
+          nullable: true
+        version:
+          type: string
+          maxLength: 50
+          nullable: true
+
+    # ── Статистика ──
+    ScoreBucket:
+      type: object
+      required: [score, count]
+      properties:
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        count:
+          type: integer
+          minimum: 0
+
+    RatingStats:
+      type: object
+      required: [count, average, index, lowSample, histogram]
+      properties:
+        count:
+          type: integer
+          minimum: 0
+          description: n — количество оценок
+        average:
+          type: number
+          nullable: true
+          description: Средняя, округлена до одного знака. `null`, если оценок нет.
+          example: 4.3
+        index:
+          type: number
+          nullable: true
+          minimum: -100
+          maximum: 100
+          description: |
+            Индекс в духе NPS: доля оценок «5» минус доля оценок «1–3», в процентах. `null`, если оценок нет.
+            ОТКРЫТО: формулу нужно утвердить с заказчиком.
+        lowSample:
+          type: boolean
+          description: '`count < 20` — в интерфейсе показывается серым'
+        histogram:
+          type: array
+          minItems: 5
+          maxItems: 5
+          description: Распределение по оценкам, всегда пять элементов от 1 до 5
+          items:
+            $ref: '#/components/schemas/ScoreBucket'
+
+    TimeseriesPoint:
+      type: object
+      required: [periodStart, count, average, lowSample]
+      properties:
+        periodStart:
+          type: string
+          format: date
+          description: Первый день периода (день, понедельник или первое число месяца)
+        count:
+          type: integer
+          minimum: 0
+        average:
+          type: number
+          nullable: true
+        lowSample:
+          type: boolean
+
+    Timeseries:
+      type: object
+      required: [granularity, from, to, points]
+      properties:
+        granularity:
+          type: string
+          enum: [day, week, month]
+          description: Фактически применённая детализация
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeseriesPoint'
+
+    Review:
+      type: object
+      required: [id, score, source, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        score:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          nullable: true
+        serviceId:
+          type: integer
+          format: int64
+          nullable: true
+        serviceName:
+          type: string
+          nullable: true
+        raterRole:
+          type: string
+          nullable: true
+          enum: [student, staff, unknown]
+        pagePath:
+          type: string
+          nullable: true
+        version:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [widget, api]
+        createdAt:
+          type: string
+          format: date-time
+
+    ReviewPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Review'
+
+    # ── Дашборд ──
+    DashboardService:
+      type: object
+      required: [id, name, health, rating]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        health:
+          $ref: '#/components/schemas/Health'
+        rating:
+          $ref: '#/components/schemas/RatingStats'
+
+    DashboardProduct:
+      type: object
+      required: [id, name, status, health, rating, services]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, paused]
+        health:
+          allOf:
+            - $ref: '#/components/schemas/Health'
+          description: |
+            Лампочка продукта собирается из активных сервисов: `down`, если упал хотя бы один; иначе `up`, если хотя бы один жив;
+            иначе `unknown`. `responseMs` — максимум по сервисам, `checkedAt` — самая свежая проверка.
+            ОТКРЫТО: правило агрегации подтвердить.
+        rating:
+          $ref: '#/components/schemas/RatingStats'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/DashboardService'
+
+    Dashboard:
+      type: object
+      required: [ratingPeriodDays, products]
+      properties:
+        ratingPeriodDays:
+          type: integer
+          example: 30
+        products:
+          type: array
+          items:
+            $ref: '#/components/schemas/DashboardProduct'
+
+    # ── Релизы ──
+    Release:
+      type: object
+      required: [id, productId, version, title, releasedAt, createdBy, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        productId:
+          type: integer
+          format: int64
+        serviceId:
+          type: integer
+          format: int64
+          nullable: true
+        version:
+          type: string
+          maxLength: 50
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        releasedAt:
+          type: string
+          format: date-time
+        createdBy:
+          $ref: '#/components/schemas/User'
+        createdAt:
+          type: string
+          format: date-time
+
+    ReleaseInput:
+      type: object
+      required: [version, title, releasedAt]
+      properties:
+        serviceId:
+          type: integer
+          format: int64
+          nullable: true
+        version:
+          type: string
+          minLength: 1
+          maxLength: 50
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        releasedAt:
+          type: string
+          format: date-time
+
+    ReleaseUpdate:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 50
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          nullable: true
+        releasedAt:
+          type: string
+          format: date-time
+
+    ComparisonWindow:
+      type: object
+      required: [from, to, stats]
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        clippedByReleaseId:
+          type: integer
+          format: int64
+          nullable: true
+          description: Другой релиз, по дате которого окно обрезано
+        stats:
+          $ref: '#/components/schemas/RatingStats'
+
+    ReleaseComparison:
+      type: object
+      required: [release, before, after, averageDelta]
+      properties:
+        release:
+          $ref: '#/components/schemas/Release'
+        before:
+          $ref: '#/components/schemas/ComparisonWindow'
+        after:
+          $ref: '#/components/schemas/ComparisonWindow'
+        averageDelta:
+          type: number
+          nullable: true
+          description: Средняя «после» минус средняя «до». `null`, если в одном из окон нет оценок.

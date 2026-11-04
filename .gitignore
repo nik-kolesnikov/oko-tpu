@@ -1,0 +1,38 @@
+# Секреты — никогда в репозиторий
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.p12
+*.jks
+
+# Maven / Java
+target/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.log
+
+# Node / frontend
+node_modules/
+dist/
+build/
+coverage/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude: локальные настройки участника
+.claude/settings.local.json
