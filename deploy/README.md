@@ -1,14 +1,18 @@
-# CI на кодлабе и pull-деплой на VPS
+# CI на GitHub Actions и pull-деплой на VPS
+
+Репозиторий переехал с кодлаба ТПУ на GitHub (`Reliksys/oko-tpu`): Registry кодлаба
+был недоступен ни раннерам, ни снаружи (порт 5050 закрыт), публикация образа не работала.
 
 ## Схема
 
 ```text
-push / MR → GitLab Runner (сервер кодлаба)
-              ├─ Maven verify: JAR, unit / integration / contract tests
-              ├─ проверки сценария деплоя
-              ├─ frontend: типы, тесты, артефакт frontend/dist-deploy (панель + виджет)
-              └─ Jib: сборка Java-образа без Docker-демона
-                   └─ main / dev → GitLab Container Registry
+push / PR → GitHub Actions
+              ├─ backend-verify: Maven verify, unit / integration (Testcontainers) / contract tests
+              ├─ deploy-verify: shellcheck, тесты pull.sh, docker compose config
+              ├─ frontend-verify: типы, тесты, артефакт frontend-static (панель + виджет)
+              ├─ widget-e2e: виджет в Chromium на HTML / PHP / React
+              └─ backend-image: Jib без Docker-демона
+                   └─ push в main / dev → ghcr.io/<owner>/oko-tpu/backend
                                       ↑ исходящее соединение с VPS
                               systemd timer, каждые 5 минут
                                       ↓
@@ -56,89 +60,46 @@ sudo docker compose version
 Используется актуальный Compose plugin с `up --wait`; старый `docker-compose` v1
 не подходит. Основа команд — [инструкция Docker для Ubuntu](https://docs.docker.com/engine/install/ubuntu/).
 
-## 2. Container Registry на кодлабе
+## 2. GitHub Container Registry
 
-Сначала проверить в проекте `oko/tpu_rating` раздел **Deploy → Container Registry**
-(в некоторых версиях **Packages & Registries**). Если доступен — скопировать оттуда
-адрес Registry и путь образа. Git URL `https://codelab.tpu.ru/oko/tpu_rating.git`
-не является адресом Registry.
+Образы публикуются в GHCR того же владельца, что и репозиторий:
+`ghcr.io/<owner>/oko-tpu/backend` (имя в нижнем регистре, для `Reliksys` — `ghcr.io/reliksys/oko-tpu/backend`).
+Настраивать Registry не нужно: workflow входит в GHCR встроенным `GITHUB_TOKEN`
+с правом `packages: write`. После первой публикации пакет виден в профиле владельца →
+Packages. Для приватного репозитория пакет тоже приватный.
 
-Если Registry отключён, нужен администратор GitLab. Для установки Linux package
-(Omnibus) возможен Registry на том же домене и отдельном порту. В существующий
-`/etc/gitlab/gitlab.rb` добавить/изменить, не заменяя весь файл:
-
-```ruby
-registry_external_url 'https://codelab.tpu.ru:5050'
-# Указать фактические файлы действующего сертификата codelab.tpu.ru:
-registry_nginx['ssl_certificate'] = '/etc/gitlab/ssl/codelab.tpu.ru.crt'
-registry_nginx['ssl_certificate_key'] = '/etc/gitlab/ssl/codelab.tpu.ru.key'
-```
-
-Применить `sudo gitlab-ctl reconfigure`, проверить `sudo gitlab-ctl status registry`.
-Открыть TCP 5050 для runner и VPS. Если GitLab в Docker, также пробросить этот порт
-в его Compose и править его постоянный `gitlab.rb`. Если GitLab установлен через
-Helm или внешний reverse proxy, конфигурация другая — не выполнять Omnibus-команды.
-Существующий HTTPS кодлаба не перенастраивать; сертификат должен обновляться и для
-Registry. Включить Container Registry в настройках видимости/функций проекта.
-
-Проверка с runner и VPS:
+Проверка с VPS (без входа ожидается `401`/`UNAUTHORIZED` — Registry отвечает, нужен токен):
 
 ```bash
-curl -I https://codelab.tpu.ru:5050/v2/
+curl -sI https://ghcr.io/v2/ | head -1
 ```
 
-Ожидается `401 Unauthorized` и заголовок `Docker-Distribution-Api-Version`:
-это рабочий Registry, требующий входа. Ошибка TLS или timeout — не норма.
-Адрес `:5050` — выбранный вариант настройки, а не уже подтверждённая конфигурация
-ТПУ. Подробнее: [администрирование Registry](https://docs.gitlab.com/administration/packages/container_registry/).
+## 3. GitHub Actions
 
-## 3. Runner кодлаба
+Workflow — `.github/workflows/ci.yml`, раннеры `ubuntu-latest` (Docker есть,
+поэтому интеграционные тесты используют Testcontainers). Для приватного
+репозитория на бесплатном плане — 2000 минут Actions в месяц; полный прогон
+занимает несколько минут.
 
-В проекте **Settings → CI/CD → Runners → Instance** доступны общие runners
-`#52 codelab-runner` и `#48 runner.tpu.ru`. Нужно оставить включённым
-**Turn on instance runners for this project**. Свой project runner и доступ по SSH
-к серверу кодлаба не требуются. Задания CI оставлены без тега, чтобы GitLab
-мог назначить их на любой доступный runner с `run_untagged`.
+## 4. Настройки репозитория и первый pipeline
 
-Первый запуск на #52 показал, что его контейнер не может соединиться с
-`https://codelab.tpu.ru` для получения исходников, а DinD там не получил
-необходимые права. Если проблема повторится и на #48, её исправляет
-администратор общих runners.
+- Settings → Branches: защитить `main` и `dev` — слияние только через PR,
+  обязательные проверки `backend-verify`, `deploy-verify`, `frontend-verify`, `widget-e2e`, `backend-image`.
+- Settings → General: ветка по умолчанию — `dev` (PR открываются в неё).
+- Settings → Collaborators: добавить команду.
+- Не добавлять в Actions пароль БД, HMAC-секрет или SSH-ключ VPS.
 
-Runner #48 получает исходники, но оба общих runner отказали в запуске DinD
-из-за ограничений прав. Поэтому CI запускает PostgreSQL как GitLab service и
-собирает образ Maven-плагином Jib без Docker-демона.
-Если job останется pending, проверить доступность instance runners. Runner #52
-не смог скачать исходники из GitLab; для стабильной работы администратору
-кодлаба нужно исправить его сетевой доступ или выделить runner #48 отдельным
-тегом и закрепить этот тег в CI.
-
-## 4. Настройки проекта и первый pipeline
-
-`.gitlab-ci.yml` — основной CI. Старый `.github/workflows/backend.yml` сохранён
-как историческая конфигурация; GitLab его не исполняет.
-
-- Защитить `main` и `dev`: прямой push запрещён, слияние через MR.
-- Включить **Pipelines must succeed** перед слиянием.
-- Включить instance runners для проекта; задания не требуют специального тега.
-- Включить Registry. Переменные `CI_REGISTRY`, `CI_REGISTRY_IMAGE`,
-  `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD` GitLab предоставляет сам.
-- Не добавлять в CI пароль БД, HMAC-секрет или SSH-ключ VPS.
-
-В MR запускаются тесты и сборка образа, но образ для VPS не публикуется.
+В PR запускаются тесты и сборка образа в tar, образ не публикуется.
 После merge в `dev` успешный pipeline публикует
-`$CI_REGISTRY_IMAGE/backend:<полный SHA коммита>` и `:dev`; для `main` аналогично.
-Публикация в каждой ветке сериализована, перед обновлением тега ветки проверяется,
-что коммит остаётся её вершиной. Старый pipeline не заменяет канал устаревшим коммитом.
-Не удалять из Registry текущий и предыдущий SHA/digest при настройке очистки.
+`ghcr.io/<owner>/oko-tpu/backend:<полный SHA коммита>` и `:dev`; для `main` аналогично.
+Публикация в каждой ветке сериализована (`concurrency`), перед публикацией проверяется,
+что коммит остаётся вершиной ветки. Старый pipeline не заменяет канал устаревшим коммитом.
+Не удалять из GHCR текущий и предыдущий SHA/digest при настройке очистки.
 
-`backend-verify` запускает также `*IT` через Surefire: PostgreSQL запускается
-как GitLab service. Локально те же тесты используют Testcontainers. JUnit-отчёты
-и JAR сохраняются на 7 дней. Образ собирается из тех же исходников и зависимостей
-после успешных тестов при помощи [Jib](https://github.com/GoogleContainerTools/jib/tree/master/jib-maven-plugin).
-На MR Jib создаёт tar-архив для проверки сборки; в `dev`/`main` отправляет образ
-непосредственно в Registry. Пароль Registry читается из переменных GitLab в
-временном Docker config внутри job и не передаётся в аргументах процесса.
+Образ собирается из тех же исходников после успешных тестов при помощи
+[Jib](https://github.com/GoogleContainerTools/jib/tree/master/jib-maven-plugin).
+Учётные данные Registry Jib берёт из Docker config, который пишет `docker/login-action`;
+пароль не передаётся в аргументах процесса.
 
 ## 5. Подготовить VPS
 
@@ -150,20 +111,21 @@ HTTPS завершает Caddy: он получает и продлевает с
 во внутренней Docker-сети и передаёт backend `X-Forwarded-Proto: https`.
 Не добавлять ему публичный `ports`: конфигурация доверяет этой топологии.
 
-Создать в GitLab **Settings → Repository → Deploy tokens** токен `oko-vps-pull`
-только со scope `read_registry`. Дать срок жизни и запланировать продление.
-Пароль CI job для VPS не подходит — он временный.
-Право чтения Registry и способ входа описаны в [GitLab Registry authentication](https://docs.gitlab.com/user/packages/container_registry/authenticate_with_container_registry/).
+Для скачивания образа VPS нужен токен GitHub: владелец репозитория создаёт
+**Settings → Developer settings → Personal access tokens → Tokens (classic)** с одним
+scope `read:packages`, со сроком жизни и напоминанием о продлении.
+`GITHUB_TOKEN` из Actions для VPS не подходит — он временный.
+Подробнее: [Working with the Container registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 
 На VPS:
 
 ```bash
 sudo install -d -m 0700 /opt/oko
 sudo install -d -m 0755 /opt/oko/static
-sudo docker login codelab.tpu.ru:5050 --username <имя-deploy-token>
+sudo docker login ghcr.io --username <github-логин владельца токена>
 ```
 
-Ввести token в запросе пароля. Использовать фактический адрес Registry из раздела 2.
+Ввести token в запросе пароля. 
 Учётные данные сохраняются у root, от которого работает timer. Не вводить пароль
 в аргумент `-p`, shell history или `.env` проекта.
 
@@ -185,7 +147,7 @@ sudoedit /opt/oko/.env
 
 | Переменная | Значение |
 |---|---|
-| `OKO_BACKEND_IMAGE` | Например `codelab.tpu.ru:5050/oko/tpu_rating/backend:dev`; взять реальный Registry path |
+| `OKO_BACKEND_IMAGE` | `ghcr.io/reliksys/oko-tpu/backend:dev` (имя в нижнем регистре) |
 | `OKO_DOMAIN` | Домен VPS, без схемы и пути |
 | `OKO_ACME_EMAIL` | Email администратора для TLS-сертификата |
 | `OKO_DB_PASSWORD` | Случайный пароль, можно сгенерировать `openssl rand -hex 32` |
@@ -202,15 +164,15 @@ HMAC-секрет сохранять при обновлениях. Пароль
 ### Панель и виджет (статика)
 
 Timer обновляет только backend. Статику CI собирает в джобе `frontend-verify`
-(артефакт `frontend/dist-deploy`: `panel/` и `widget/v1/`). Обновление вручную:
+(артефакт `frontend-static`: `panel/` и `widget/v1/`). Обновление вручную:
 
-1. Кодлаб → Build → Pipelines → последний пайплайн `dev` → джоба `frontend-verify` → Download artifacts.
-2. На VPS:
+1. GitHub → Actions → последний успешный запуск `ci` на `dev` → Artifacts → `frontend-static` (zip).
+2. Скопировать zip на VPS и:
 
 ```bash
-unzip -q artifacts.zip -d /tmp/oko-static
-sudo cp -a /tmp/oko-static/frontend/dist-deploy/. /opt/oko/static/
-rm -rf /tmp/oko-static artifacts.zip
+unzip -q frontend-static.zip -d /tmp/oko-static
+sudo cp -a /tmp/oko-static/. /opt/oko/static/
+rm -rf /tmp/oko-static frontend-static.zip
 ```
 
 nginx читает `/opt/oko/static` напрямую, перезапуск не нужен. Если `panel/` и

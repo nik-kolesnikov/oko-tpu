@@ -56,8 +56,8 @@ docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build
 
 Подробности — в `backend/CLAUDE.md`.
 
-CI на кодлабе, настройка GitLab Runner/Registry и VPS с автоматическим pull-деплоем
-из `dev` (ветка настраивается) — [инструкция](deploy/README.md).
+CI на GitHub Actions, образ в GitHub Container Registry и VPS с автоматическим pull-деплоем
+из `dev` (ветка настраивается) — [инструкция](deploy/README.md). Репозиторий на кодлабе ТПУ заморожен.
 
 ## Что не кладём в репозиторий
 

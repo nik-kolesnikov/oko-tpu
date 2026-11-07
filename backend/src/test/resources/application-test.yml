@@ -1,4 +1,4 @@
-# Локально PostgreSQL поднимает Testcontainers; в CI используется GitLab PostgreSQL service.
+# Локально и в GitHub Actions PostgreSQL поднимает Testcontainers; OKO_TEST_DB_URL — для внешнего PostgreSQL.
 spring:
   datasource:
     url: ${OKO_TEST_DB_URL:jdbc:postgresql://localhost:5432/oko}
