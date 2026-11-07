@@ -1,0 +1,19 @@
+body {
+  background: var(--mantine-color-gray-0);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+.clickable-row:hover {
+  background: var(--mantine-color-gray-0);
+}
+
+.code-block {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
