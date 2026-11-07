@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Тестовая страница: React SPA</title>
+<style>body { font: 16px system-ui; max-width: 720px; margin: 40px auto; padding: 0 16px; } nav a { margin-right: 12px; }</style>
+<script type="importmap">
+{ "imports": {
+  "react": "https://esm.sh/react@19.1.0",
+  "react-dom/client": "https://esm.sh/react-dom@19.1.0/client"
+} }
+</script>
+</head>
+<body>
+  <div id="root">Загрузка React…</div>
+  <script type="module">
+    import React, { useState } from 'react';
+    import { createRoot } from 'react-dom/client';
+    const h = React.createElement;
+
+    function App() {
+      const [page, setPage] = useState('home');
+      const [count, setCount] = useState(0);
+      return h('div', null,
+        h('h1', null, 'Электронные курсы (React SPA)'),
+        h('nav', null,
+          h('a', { href: '#', onClick: (e) => { e.preventDefault(); setPage('home'); } }, 'Главная'),
+          h('a', { href: '#', onClick: (e) => { e.preventDefault(); setPage('courses'); } }, 'Курсы')),
+        h('p', null, page === 'home' ? 'Главная страница SPA. Виджет подключён в index.html и не зависит от React.' : 'Список курсов: Java, ОС, UI.'),
+        h('button', { id: 'counter', onClick: () => setCount(count + 1) }, 'Кликов: ' + count));
+    }
+    createRoot(document.getElementById('root')).render(h(App));
+  </script>
+
+  <!-- ОКО ТПУ: виджет оценки (код со вкладки «Интеграция») -->
+  <script>
+    (function (d, w) {
+      var s = d.createElement('script');
+      s.src = '__OKO_ORIGIN__/widget/v1/loader.js';
+      s.async = true;
+      s.setAttribute('data-key', '__OKO_KEY__');
+      s.setAttribute('data-version', '2.4.0');
+      w.addEventListener('load', function () { d.body.appendChild(s); });
+    })(document, window);
+  </script>
+</body>
+</html>

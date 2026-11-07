@@ -10,7 +10,7 @@
 frontend/
 ├── src/           панель (React SPA): вход, дерево продуктов, карточка продукта, форма продукта, админ
 ├── widget/        виджет для чужих сайтов: loader.js и frame.js; не React
-└── mock/          мок-сервер по спецификации (Prism) — фронт работает на нём до готовности backend
+└── mock/          мок-сервер по спецификации — фронт работает на нём до готовности backend (есть и режим Prism)
 ```
 
 ## Панель
@@ -43,7 +43,7 @@ frontend/
 
 **Идентификатор оценившего**
 - `crypto.randomUUID()`, один раз на браузер.
-- Открыто: где хранить. Cookie внутри iframe на нашем домене — это cookie третьей стороны, их режут Safari и Chrome. Варианты: `localStorage` сайта хоста через `loader.js` с передачей в iframe. Выбираем после проверки в браузерах с заблокированными сторонними cookie. Согласовать с Данилом.
+- Реализовано: `localStorage` сайта хоста через `loader.js`, в iframe передаётся через `postMessage` (сторонние cookie в iframe режут Safari и Chrome). Ключ хранилища `oko:<начало ключа>`. Нужно подтвердить с Данилом.
 - В хранилище — только идентификатор и дата последнего показа. Больше ничего о пользователе.
 
 **Публичный ключ**
@@ -64,12 +64,30 @@ frontend/
 
 ## Команды
 
-Появятся после каркаса (этап 0). Ориентир:
-- `cd frontend && npm run dev` — панель на моке;
-- `npm run dev:backend` — панель против `localhost:8000`;
-- `npm run build:widget` — сборка виджета;
-- `npm test` — тесты, в том числе размер виджета.
+- `npm run demo` — всё сразу: мок-сервер (:4010), панель (:5173), тестовые сайты (:5500 HTML, :5501 PHP, :5502 React);
+- `npm run mock` + `npm run dev` — панель на stateful-моке;
+- `npm run dev:backend` — панель против backend на `localhost:8080` (backend с `OKO_PUBLIC_ORIGIN=http://localhost:5173`, профиль `dev`);
+- `npm run mock:prism` + `npm run dev:prism` — строго по контракту (Prism, без состояния);
+- `npm run gen:api` — перегенерировать `src/api/schema.d.ts` после изменения контракта;
+- `npm run typecheck`, `npm test` — типы, юнит-тесты, сборка виджета и проверка веса;
+- `npm run test:widget` — сквозные проверки виджета в Chromium (первый раз: `npx playwright install chromium`);
+- `npm run build`, `npm run build:widget` — сборка панели в `dist/` и виджета в `widget/dist/`;
+- `npm run build:deploy` — статика для nginx: `dist-deploy/panel` и `dist-deploy/widget/v1`;
+- `OKO_TEST_KEY=pk_… npm run test-pages` — тестовые сайты с ключом продукта из настоящего backend.
+
+## Где что
+
+- `src/api/hooks.ts` — по одному хуку на операцию контракта, имя = `operationId`.
+- `src/api/schema.d.ts` — генерируется, руками не правим.
+- `src/lib/format.ts` — правила показа: средняя, индекс, цвета, n < 20, день по Томску.
+- `widget/src/` — `loader.js` (на чужом сайте), `frame.js` + `frame.css` (внутри iframe; саму страницу iframe генерирует backend).
+- `mock/` — мок-сервер; повторяет контракт, но это не backend.
 
 ## Частые ошибки
 
-- (пока пусто)
+- Код вставки — не `<script async src>`, а сниппет, который добавляет скрипт после `load` (`src/lib/embed.ts`): иначе медленный сервер ОКО задерживает событие `load` у сайта.
+- Prism отдаёт пути без `/api/v1` — для него только `npm run dev:prism`.
+- Backend v1 отвечает 404 на ещё не реализованные эндпоинты (dashboard, stats, ratings, releases). Не показываем это как «нет доступа»: `isNotImplemented` + `NotImplementedState` из `components/States.tsx`.
+- Без `OKO_PUBLIC_ORIGIN=http://localhost:5173` у backend вход в панель уводит на :8080, а оценки из iframe получают 403 `ORIGIN_NOT_ALLOWED`.
+- `useState(() => takeSomething())` в StrictMode вызывается дважды: одноразовые значения сначала «подсматриваем», чистим в `useEffect` (см. `src/lib/oneTimeKey.ts`).
+- Сообщения браузера «Framing … violates Content-Security-Policy» и «Failed to load resource» на чужом сайте — это браузер, а не наш код; убрать их нельзя.
