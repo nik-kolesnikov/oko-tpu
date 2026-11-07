@@ -66,6 +66,10 @@ backend-image:
     key: maven-java21
     paths: [.m2/repository/]
   script:
+    # В eclipse-temurin нет git, а проверка «ветка ушла вперёд» ниже вызывает git ls-remote.
+    # Ставим его во всех пайплайнах, чтобы MR-пайплайн тоже проверял этот шаг.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git > /dev/null
+    - git --version
     - cd backend
     - |
       if [ "$CI_COMMIT_BRANCH" = main ] || [ "$CI_COMMIT_BRANCH" = dev ]; then
@@ -90,3 +94,26 @@ backend-image:
           -Dimage=oko-backend:mr-check
         test -s target/jib-image.tar
       fi
+
+# Панель и виджет: типы, юнит-тесты, вес виджета и статика для nginx (frontend/dist-deploy).
+# Пока frontend/ нет в ветке, джоба не создаётся.
+frontend-verify:
+  stage: verify
+  image: node:22-bookworm-slim
+  rules:
+    - exists: [frontend/package.json]
+  variables:
+    npm_config_cache: $CI_PROJECT_DIR/.npm
+  cache:
+    key: npm-frontend
+    paths: [.npm/]
+  script:
+    - cd frontend
+    - npm ci --no-audit --no-fund
+    - npm run typecheck
+    - npx vitest run
+    - npm run build:deploy
+  artifacts:
+    expire_in: 7 days
+    paths:
+      - frontend/dist-deploy/

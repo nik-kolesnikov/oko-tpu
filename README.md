@@ -46,6 +46,9 @@ cd backend && ./mvnw verify
 docker run -d --name oko-pg -e POSTGRES_DB=oko -e POSTGRES_USER=oko -e POSTGRES_PASSWORD=oko -p 5432:5432 postgres:17-alpine
 cd backend && ./mvnw spring-boot:run -Dspring-boot.run.profiles=dev
 
+# панель и виджет против этого backend (Vite на :5173 проксирует /api на :8080)
+cd frontend && npm install && npm run dev:backend
+
 # всё вместе: nginx + backend + PostgreSQL
 cp deploy/.env.example deploy/.env   # заполнить значения
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build

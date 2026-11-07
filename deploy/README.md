@@ -6,6 +6,7 @@
 push / MR → GitLab Runner (сервер кодлаба)
               ├─ Maven verify: JAR, unit / integration / contract tests
               ├─ проверки сценария деплоя
+              ├─ frontend: типы, тесты, артефакт frontend/dist-deploy (панель + виджет)
               └─ Jib: сборка Java-образа без Docker-демона
                    └─ main / dev → GitLab Container Registry
                                       ↑ исходящее соединение с VPS
@@ -196,7 +197,24 @@ HMAC-секрет сохранять при обновлениях. Пароль
 
 В текущем backend ещё нет реального SSO: профиль `prod` запускается, но вход
 в панель вернёт 503. Не включать открытую dev-заглушку на публичном VPS.
-Панель сейчас является заглушкой, клиентского виджета ещё нет.
+Панель и виджет — статика из `frontend/`; как её обновлять, см. ниже.
+
+### Панель и виджет (статика)
+
+Timer обновляет только backend. Статику CI собирает в джобе `frontend-verify`
+(артефакт `frontend/dist-deploy`: `panel/` и `widget/v1/`). Обновление вручную:
+
+1. Кодлаб → Build → Pipelines → последний пайплайн `dev` → джоба `frontend-verify` → Download artifacts.
+2. На VPS:
+
+```bash
+unzip -q artifacts.zip -d /tmp/oko-static
+sudo cp -a /tmp/oko-static/frontend/dist-deploy/. /opt/oko/static/
+rm -rf /tmp/oko-static artifacts.zip
+```
+
+nginx читает `/opt/oko/static` напрямую, перезапуск не нужен. Если `panel/` и
+`widget/v1/` обновились одновременно со сменой API, сначала дождаться нового backend.
 
 ## 6. Первый запуск и таймер
 
