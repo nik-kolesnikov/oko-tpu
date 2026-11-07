@@ -16,6 +16,9 @@ springdoc:
     enabled: true
 
 oko:
-  public-origin: ${OKO_PUBLIC_ORIGIN:http://localhost:8080}
+  # Панель в разработке открывается через Vite (frontend: npm run dev:backend) на :5173 и проксирует /api сюда.
+  # От этого origin backend строит адрес входа и принимает оценки из iframe виджета.
+  # Если открываешь backend напрямую на :8080, задай OKO_PUBLIC_ORIGIN=http://localhost:8080.
+  public-origin: ${OKO_PUBLIC_ORIGIN:http://localhost:5173}
   admin-logins: ${OKO_ADMIN_LOGINS:admin}
   rater-hmac-secret: ${OKO_RATER_HMAC_SECRET:dev-only-hmac-secret-not-for-prod-0123456789}
