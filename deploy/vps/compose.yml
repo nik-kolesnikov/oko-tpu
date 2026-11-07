@@ -1,0 +1,81 @@
+name: oko
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: oko
+      POSTGRES_USER: oko
+      POSTGRES_PASSWORD: ${OKO_DB_PASSWORD:?set OKO_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: ["postgres", "-c", "shared_buffers=256MB"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oko -d oko"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging: *logging
+    restart: unless-stopped
+
+  backend:
+    image: ${OKO_BACKEND_IMAGE:?set OKO_BACKEND_IMAGE}
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      OKO_DB_URL: jdbc:postgresql://db:5432/oko
+      OKO_DB_USER: oko
+      OKO_DB_PASSWORD: ${OKO_DB_PASSWORD:?set OKO_DB_PASSWORD}
+      OKO_PUBLIC_ORIGIN: https://${OKO_DOMAIN:?set OKO_DOMAIN}
+      OKO_ADMIN_LOGINS: ${OKO_ADMIN_LOGINS:-}
+      OKO_RATER_HMAC_SECRET: ${OKO_RATER_HMAC_SECRET:?set OKO_RATER_HMAC_SECRET}
+      JAVA_OPTS: ${OKO_JAVA_OPTS:--Xmx1g -XX:+ExitOnOutOfMemoryError}
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.28-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/usr/share/nginx/html:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    logging: *logging
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      OKO_DOMAIN: ${OKO_DOMAIN:?set OKO_DOMAIN}
+      OKO_ACME_EMAIL: ${OKO_ACME_EMAIL:?set OKO_ACME_EMAIL}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      nginx:
+        condition: service_healthy
+    logging: *logging
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

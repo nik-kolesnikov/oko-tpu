@@ -36,3 +36,9 @@ Thumbs.db
 
 # Claude: локальные настройки участника
 .claude/settings.local.json
+
+# Deployment state (server-local).
+deploy/vps/state/
+.m2/
+__pycache__/
+*.pyc

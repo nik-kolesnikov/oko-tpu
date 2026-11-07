@@ -53,6 +53,9 @@ docker compose -f deploy/docker-compose.yml --env-file deploy/.env up --build
 
 Подробности — в `backend/CLAUDE.md`.
 
+CI на кодлабе, настройка GitLab Runner/Registry и VPS с автоматическим pull-деплоем
+из `dev` (ветка настраивается) — [инструкция](deploy/README.md).
+
 ## Что не кладём в репозиторий
 
 - `.env`, ключи, `client_secret`, HMAC-секрет.
