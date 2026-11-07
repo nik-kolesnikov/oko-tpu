@@ -1,0 +1,74 @@
+# Общие настройки. Секреты — только из переменных окружения (deploy/.env.example).
+spring:
+  application:
+    name: oko-backend
+  datasource:
+    url: ${OKO_DB_URL:jdbc:postgresql://localhost:5432/oko}
+    username: ${OKO_DB_USER:oko}
+    password: ${OKO_DB_PASSWORD:}
+    hikari:
+      # Быстрый отказ, если БД недоступна: ответ 503, а не зависший запрос.
+      connection-timeout: 3000
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+  mvc:
+    problemdetails:
+      enabled: false
+
+server:
+  # За nginx: X-Forwarded-For и X-Forwarded-Proto от доверенного прокси (внутренние сети).
+  forward-headers-strategy: native
+  error:
+    whitelabel:
+      enabled: false
+    include-stacktrace: never
+    include-message: never
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        name: OKO_SESSION
+        http-only: true
+        secure: true
+        same-site: lax
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: false
+
+logging:
+  pattern:
+    level: "%5p [%X{requestId:-}]"
+
+oko:
+  public-origin: ${OKO_PUBLIC_ORIGIN:}
+  admin-logins: ${OKO_ADMIN_LOGINS:}
+  rater-hmac-secret: ${OKO_RATER_HMAC_SECRET:}
+  dedup-window: 14d
+  monitoring:
+    stale-after: 5m
+  rate-limit:
+    widget-rating-per-key: 300
+    server-rating-per-key: 1200
+    rating-per-ip: 60
+    widget-config-per-key: 1200
+    widget-config-per-ip: 300

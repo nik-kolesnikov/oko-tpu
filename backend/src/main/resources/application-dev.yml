@@ -1,0 +1,21 @@
+# Разработка на ноутбуке: локальный PostgreSQL в Docker, заглушка входа (StubIdentityProvider).
+# Значения по умолчанию здесь — только для dev, в prod их нет.
+spring:
+  datasource:
+    password: ${OKO_DB_PASSWORD:oko}
+
+server:
+  servlet:
+    session:
+      cookie:
+        # Локально панель открывается по http://localhost, Secure-cookie браузер бы не вернул.
+        secure: false
+
+springdoc:
+  swagger-ui:
+    enabled: true
+
+oko:
+  public-origin: ${OKO_PUBLIC_ORIGIN:http://localhost:8080}
+  admin-logins: ${OKO_ADMIN_LOGINS:admin}
+  rater-hmac-secret: ${OKO_RATER_HMAC_SECRET:dev-only-hmac-secret-not-for-prod-0123456789}

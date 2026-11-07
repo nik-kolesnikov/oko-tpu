@@ -1,0 +1,10 @@
+# Сервер ЦЭУ. Заглушки входа здесь нет. Все значения oko.* обязаны прийти из окружения.
+springdoc:
+  api-docs:
+    enabled: false
+
+logging:
+  structured:
+    format:
+      # Структурированные логи (JSON). Тела запросов, тексты оценок и raterId не логируются.
+      console: ecs

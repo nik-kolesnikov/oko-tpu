@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for a published OKO image every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Unit=oko-pull.service
+
+[Install]
+WantedBy=timers.target

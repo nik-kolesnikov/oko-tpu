@@ -1,0 +1,7 @@
+{
+	email {$OKO_ACME_EMAIL}
+}
+
+{$OKO_DOMAIN} {
+	reverse_proxy nginx:80
+}

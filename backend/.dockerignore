@@ -1,0 +1,4 @@
+target/*
+!target/oko-backend-*.jar
+*.iml
+.idea/

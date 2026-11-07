@@ -1,0 +1,17 @@
+[Unit]
+Description=Pull and apply the published OKO backend image
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/oko
+Environment=OKO_DEPLOY_DIR=/opt/oko
+ExecStart=/usr/local/sbin/oko-pull
+TimeoutStartSec=15min
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
