@@ -93,10 +93,16 @@ curl -I https://codelab.tpu.ru:5050/v2/
 
 ## 3. Runner кодлаба
 
-В проекте **Settings → CI/CD → Runners → Instance** уже доступен online runner
-`#52 codelab-runner` с тегом `codelab-runner`. Нужно оставить включённым
+В проекте **Settings → CI/CD → Runners → Instance** доступны общие runners
+`#52 codelab-runner` и `#48 runner.tpu.ru`. Нужно оставить включённым
 **Turn on instance runners for this project**. Свой project runner и доступ по SSH
-к серверу кодлаба не требуются. `.gitlab-ci.yml` использует этот тег.
+к серверу кодлаба не требуются. Задания CI оставлены без тега, чтобы GitLab
+мог назначить их на любой доступный runner с `run_untagged`.
+
+Первый запуск на #52 показал, что его контейнер не может соединиться с
+`https://codelab.tpu.ru` для получения исходников, а DinD там не получил
+необходимые права. Если проблема повторится и на #48, её исправляет
+администратор общих runners.
 
 Тип executor и разрешение на privileged Docker jobs на странице списка не видны.
 Первый MR pipeline покажет, поддерживает ли runner наш DinD и Testcontainers.
@@ -114,7 +120,7 @@ runner с Docker executor и privileged mode. Именно такая настр
 
 - Защитить `main` и `dev`: прямой push запрещён, слияние через MR.
 - Включить **Pipelines must succeed** перед слиянием.
-- Включить instance runners для проекта; job используют тег `codelab-runner`.
+- Включить instance runners для проекта; задания не требуют специального тега.
 - Включить Registry. Переменные `CI_REGISTRY`, `CI_REGISTRY_IMAGE`,
   `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD` GitLab предоставляет сам.
 - Не добавлять в CI пароль БД, HMAC-секрет или SSH-ключ VPS.
