@@ -6,7 +6,7 @@
 push / MR → GitLab Runner (сервер кодлаба)
               ├─ Maven verify: JAR, unit / integration / contract tests
               ├─ проверки сценария деплоя
-              └─ Docker build из проверенного JAR
+              └─ Jib: сборка Java-образа без Docker-демона
                    └─ main / dev → GitLab Container Registry
                                       ↑ исходящее соединение с VPS
                               systemd timer, каждые 5 минут
@@ -104,14 +104,13 @@ curl -I https://codelab.tpu.ru:5050/v2/
 необходимые права. Если проблема повторится и на #48, её исправляет
 администратор общих runners.
 
-Тип executor и разрешение на privileged Docker jobs на странице списка не видны.
-Первый MR pipeline покажет, поддерживает ли runner наш DinD и Testcontainers.
-Задание `runner-check` проверяет Docker до запуска тестов.
-Если job останется pending, проверить доступность instance runner и тег.
-Если job начнётся, но `docker info`/Testcontainers не подключатся к Docker,
-попросить администратора кодлаба разрешить DinD на этом runner либо предоставить
-runner с Docker executor и privileged mode. Именно такая настройка требуется для
-текущего способа сборки: [GitLab DinD](https://docs.gitlab.com/ci/docker/docker_in_docker/).
+Runner #48 получает исходники, но оба общих runner отказали в запуске DinD
+из-за ограничений прав. Поэтому CI запускает PostgreSQL как GitLab service и
+собирает образ Maven-плагином Jib без Docker-демона.
+Если job останется pending, проверить доступность instance runners. Runner #52
+не смог скачать исходники из GitLab; для стабильной работы администратору
+кодлаба нужно исправить его сетевой доступ или выделить runner #48 отдельным
+тегом и закрепить этот тег в CI.
 
 ## 4. Настройки проекта и первый pipeline
 
@@ -132,10 +131,13 @@ runner с Docker executor и privileged mode. Именно такая настр
 что коммит остаётся её вершиной. Старый pipeline не заменяет канал устаревшим коммитом.
 Не удалять из Registry текущий и предыдущий SHA/digest при настройке очистки.
 
-`backend-verify` запускает также `*IT` через Surefire: PostgreSQL поднимается
-Testcontainers в DinD. JUnit-отчёты и JAR сохраняются на 7 дней. Образ использует
-именно этот JAR, а не повторную Maven-сборку. Настройка подключения Testcontainers
-следует [его инструкции для GitLab](https://java.testcontainers.org/supported_docker_environment/continuous_integration/gitlab_ci/).
+`backend-verify` запускает также `*IT` через Surefire: PostgreSQL запускается
+как GitLab service. Локально те же тесты используют Testcontainers. JUnit-отчёты
+и JAR сохраняются на 7 дней. Образ собирается из тех же исходников и зависимостей
+после успешных тестов при помощи [Jib](https://github.com/GoogleContainerTools/jib/tree/master/jib-maven-plugin).
+На MR Jib создаёт tar-архив для проверки сборки; в `dev`/`main` отправляет образ
+непосредственно в Registry. Пароль Registry читается из переменных GitLab в
+временном Docker config внутри job и не передаётся в аргументах процесса.
 
 ## 5. Подготовить VPS
 

@@ -1,4 +1,8 @@
-# Тесты: профили dev,test. PostgreSQL поднимает Testcontainers (@ServiceConnection), значения ниже — выдуманные.
+# Локально PostgreSQL поднимает Testcontainers; в CI используется GitLab PostgreSQL service.
+spring:
+  datasource:
+    url: ${OKO_TEST_DB_URL:jdbc:postgresql://localhost:5432/oko}
+
 oko:
   public-origin: http://oko.test
   admin-logins: admin
