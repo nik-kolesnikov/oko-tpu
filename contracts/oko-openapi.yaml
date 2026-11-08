@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ОКО ТПУ — REST API
-  version: 0.1.0-draft
+  version: 0.2.0-draft
   description: |
     Черновик API MVP по `architecture.md` и `db.md` (бэкенд-команда).
 
@@ -13,6 +13,11 @@ info:
     - Приём оценок: заголовок `X-Api-Key` (публичный ключ — виджет, секретный — серверы продуктов). CSRF там не применяется.
     - Права: админ ЦЭУ видит и меняет всё, владелец — только свои продукты. Чужой продукт для владельца выглядит как `404` (не раскрываем существование), `403` — когда продукт виден, но действие запрещено (например, архивация продукта владельцем).
     - Ошибки — всегда объект `Error`. Тексты оценок отдаются как есть, экранирование на клиенте.
+      Кроме ответов, описанных у операций, любой JSON-эндпоинт может вернуть `405 METHOD_NOT_ALLOWED` (метод не поддерживается)
+      и `500 INTERNAL_ERROR` (внутренняя ошибка; подробности только в логе по `requestId`). `503 UNAVAILABLE` — временная
+      недоступность (БД, SSO, backend за nginx), повтор позже может помочь.
+    - Тело запроса больше 16 КБ на приёме оценок (`/ratings`, `/widget/ratings`) — `400 VALIDATION_ERROR` с `details[0].field = body`.
+      Так отвечают и backend, и nginx перед ним; кода 413 в API нет.
     - Пункты, помеченные «ОТКРЫТО», зависят от нерешённых вопросов из `architecture.md` (п. 11) или от договорённостей с командой мониторинга.
 servers:
   - url: /api/v1
@@ -48,7 +53,16 @@ paths:
       tags: [Авторизация]
       operationId: login
       summary: Начать вход через SSO ТПУ
-      description: Редирект на страницу авторизации SSO.
+      description: |
+        Редирект на страницу авторизации SSO. Панель всегда начинает вход отсюда, способ входа выбирает backend:
+
+        1. SSO ТПУ подключён — редирект на `oauth.tpu.ru`.
+        2. SSO нет, но задан вход админа по паролю (`OKO_ADMIN_LOGIN` и `OKO_ADMIN_PASSWORD`) — редирект на
+           `/auth/password-login?returnTo=…`.
+        3. Ни того, ни другого — `503 UNAVAILABLE`.
+
+        В профиле `dev` вместо SSO работает заглушка: редирект на служебную страницу `/auth/dev-login`, где можно войти
+        под любым логином. Этой страницы нет в спецификации и нет в `prod` (это проверяет тест backend).
       security: []
       parameters:
         - name: returnTo
@@ -59,9 +73,102 @@ paths:
             example: /products/12
       responses:
         '302':
-          description: Редирект на SSO
+          description: Редирект на SSO или на страницу входа админа по паролю
           headers:
             Location:
+              schema:
+                type: string
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /auth/password-login:
+    get:
+      tags: [Авторизация]
+      operationId: getPasswordLoginPage
+      summary: Страница входа админа по паролю
+      description: |
+        Временный вход для админа ЦЭУ, пока SSO ТПУ не подключён. Работает в любом профиле, включая `prod`, но только если
+        заданы обе переменные `OKO_ADMIN_LOGIN` и `OKO_ADMIN_PASSWORD` (пароль не короче 16 символов, иначе backend
+        не стартует). По умолчанию выключен.
+
+        Это не заглушка `dev-login`: войти можно только под одним логином и только с паролем. Этот логин всегда админ.
+        Отдаёт серверную HTML-форму (не часть SPA) с CSRF-токеном в скрытом поле `_csrf`.
+      security: []
+      parameters:
+        - name: returnTo
+          in: query
+          description: Относительный путь панели, куда вернуть после входа. Абсолютные URL игнорируются.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: HTML-форма входа
+          content:
+            text/html:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Авторизация]
+      operationId: passwordLogin
+      summary: Вход админа по паролю
+      description: |
+        Отправка HTML-формы. Логин и пароль сравниваются за постоянное время. Лимит попыток по умолчанию — 5 в минуту с одного IP
+        и 20 в минуту всего. Пароль и тело запроса не логируются. При успехе — новый идентификатор сессии, cookie
+        `OKO_SESSION` и редирект на `returnTo`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [login, password, _csrf]
+              properties:
+                login:
+                  type: string
+                password:
+                  type: string
+                  format: password
+                returnTo:
+                  type: string
+                _csrf:
+                  type: string
+                  description: CSRF-токен из скрытого поля формы
+      responses:
+        '302':
+          description: Вход выполнен, редирект в панель
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+        '401':
+          description: Неверный логин или пароль. HTML-форма с сообщением, без уточнения, что именно неверно.
+          content:
+            text/html:
+              schema:
+                type: string
+        '403':
+          description: CSRF-токен не передан или неверен (`FORBIDDEN`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Слишком много попыток. HTML-форма с сообщением.
+          headers:
+            Retry-After:
+              description: Через сколько секунд повторить
+              schema:
+                type: integer
+          content:
+            text/html:
               schema:
                 type: string
 
@@ -178,6 +285,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProductPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
     post:
@@ -186,6 +295,8 @@ paths:
       summary: Зарегистрировать продукт
       description: |
         Создатель автоматически становится владельцем. Вместе с продуктом создаются настройки виджета по умолчанию.
+        Ключи при создании не выпускаются: владелец выпускает их отдельно (`createKey`), например кнопкой
+        «Выпустить публичный ключ» на вкладке «Интеграция». Так сбой выпуска одного ключа не оставляет полузаведённый продукт.
         Админ может передать `ownerLogins` и завести продукт за команду (тогда создатель владельцем не становится,
         если его логина нет в списке).
 
@@ -406,6 +517,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Service'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -434,7 +547,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Такой `monitoringRef` уже привязан к другому сервису (`DUPLICATE_MONITORING_REF`)
+          description: |
+            Такой `monitoringRef` уже привязан к другому сервису (`DUPLICATE_MONITORING_REF`)
+            или продукт в архиве (`CONFLICT`)
           content:
             application/json:
               schema:
@@ -494,7 +609,10 @@ paths:
       tags: [Ключи]
       operationId: listKeys
       summary: Ключи продукта
-      description: Полный ключ не возвращается никогда, только префикс для узнавания в списке.
+      description: |
+        Полный ключ не возвращается никогда, только префикс для узнавания в списке. Это касается и публичного ключа:
+        целиком он виден только в ответе `createKey` и `reissueKey`. Потерянный ключ не восстанавливается —
+        его перевыпускают (`reissueKey`) и заменяют код вставки на всех сайтах.
       parameters:
         - name: includeRevoked
           in: query
@@ -514,6 +632,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ApiKey'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
@@ -627,6 +747,8 @@ paths:
       description: |
         Список заменяется целиком (так проще для формы в панели). Дубликаты игнорируются.
         Формат — схема + хост + необязательный порт, без пути и завершающего `/`.
+        Сайты приводятся к виду, в котором браузер шлёт `Origin`: схема и хост в нижнем регистре, порт по умолчанию
+        убирается (`https://LK.tpu.ru:443` → `https://lk.tpu.ru`). В ответе — уже приведённый список.
       requestBody:
         required: true
         content:
@@ -780,9 +902,12 @@ paths:
         `serviceId` принадлежит продукту, дубликат за 14 дней (по `rater_hash`).
         В одной транзакции вставляется строка в `rating` и обновляется `rating_daily` (строка продукта и, если указан сервис, строка сервиса).
 
-        ОТКРЫТО: iframe живёт на нашем домене, поэтому `Origin` запроса из него совпадёт с доменом ОКО, а не с сайтом продукта.
-        Сайт продукта проверяет `frame-ancestors` на `/widget/frame`; здесь достаточно убедиться, что запрос пришёл с нашего origin.
-        Если решим слать запрос прямо из `loader.js`, `Origin` сверяется с `allowed_origin`, и нужен CORS по списку продукта.
+        Оценку отправляет только iframe виджета (`/widget/frame`), который живёт на домене ОКО. Поэтому `Origin` запроса
+        должен совпадать с публичным origin ОКО (`OKO_PUBLIC_ORIGIN`); любой другой или отсутствующий `Origin` — `403 ORIGIN_NOT_ALLOWED`.
+        Сайты продукта проверяются раньше: браузер не даст встроить iframe вне `allowed_origin` (`frame-ancestors` на `/widget/frame`).
+        Прямой запрос из `loader.js` со страницы продукта не поддерживается, CORS на этом эндпоинте нет.
+
+        Тело больше 16 КБ — `400 VALIDATION_ERROR` с `details[0].field = body`.
       security:
         - publicKey: []
       requestBody:
@@ -807,7 +932,7 @@ paths:
           $ref: '#/components/responses/InvalidKey'
         '403':
           description: |
-            `ORIGIN_NOT_ALLOWED` — недопустимый `Origin`, или `PRODUCT_INACTIVE` — продукт приостановлен или в архиве
+            `ORIGIN_NOT_ALLOWED` — `Origin` не совпадает с origin ОКО, или `PRODUCT_INACTIVE` — продукт приостановлен или в архиве
           content:
             application/json:
               schema:
@@ -828,6 +953,8 @@ paths:
         Секретный ключ в `X-Api-Key` (мобильное приложение, бот, CI). Лимиты мягче, чем у виджета.
         Идентификатор оценившего (`raterId`) передаёт сам продукт, он обязателен. Сервер хранит только HMAC от него.
         Публичный ключ на этом эндпоинте не принимается (`401`).
+
+        Тело больше 16 КБ — `400 VALIDATION_ERROR` с `details[0].field = body`.
       security:
         - secretKey: []
       requestBody:
@@ -1084,9 +1211,8 @@ paths:
         Окна считаются на лету из `rating_daily`, не хранятся. Если у релиза задан `serviceId`, сравниваются оценки только этого сервиса.
 
         Окно «до» — 14 дней перед днём релиза, «после» — 14 дней начиная с дня релиза.
-        Если в окно попадает другой релиз, окно обрезается по его дате (`clippedByReleaseId`).
-
-        ОТКРЫТО: в `architecture.md` описана обрезка только по следующему релизу; здесь окно «до» симметрично обрезается по предыдущему.
+        Если в окно попадает другой релиз, окно обрезается по его дате (`clippedByReleaseId`): «до» — по предыдущему релизу
+        того же продукта (или сервиса), «после» — по следующему. Обрезка с двух сторон, как в `architecture.md`.
       responses:
         '200':
           description: OK
@@ -1244,6 +1370,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    MethodNotAllowed:
+      description: Метод не поддерживается для этого пути (`METHOD_NOT_ALLOWED`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Внутренняя ошибка сервера (`INTERNAL_ERROR`). Подробности — только в логе backend по `requestId`.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     RatingAccepted:
       description: Оценка принята
       content:
@@ -1279,6 +1417,8 @@ components:
             - DUPLICATE_RATING
             - RATE_LIMITED
             - UNAVAILABLE
+            - METHOD_NOT_ALLOWED
+            - INTERNAL_ERROR
         message:
           type: string
           description: Человекочитаемое сообщение. Не содержит персональных данных и текстов оценок.
@@ -1439,6 +1579,35 @@ components:
           type: string
           format: date-time
           nullable: true
+
+    ProductHealthStatus:
+      type: string
+      enum: [up, degraded, down, unknown]
+      description: |
+        Лампочка продукта — сводка статусов его активных сервисов (`HealthStatus`). Известный статус — `up` или `down`.
+        - `down` — есть известные статусы, и все они `down` (красная);
+        - `degraded` — среди известных есть и `down`, и `up` (жёлтая, «часть сервисов не работает»);
+        - `up` — все активные сервисы `up` (зелёная);
+        - `unknown` — нет активных сервисов или упавших нет, но хотя бы по одному сервису данных нет (серая).
+        Известное падение важнее нехватки данных: `down` + `unknown` даёт `down`, а не `unknown`, иначе серая лампочка
+        спрятала бы реальный сбой.
+
+    ProductHealth:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/ProductHealthStatus'
+        responseMs:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: Максимум по сервисам
+        checkedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Самая свежая проверка среди сервисов
 
     Service:
       type: object
@@ -1707,8 +1876,9 @@ components:
           minimum: -100
           maximum: 100
           description: |
-            Индекс в духе NPS: доля оценок «5» минус доля оценок «1–3», в процентах. `null`, если оценок нет.
-            ОТКРЫТО: формулу нужно утвердить с заказчиком.
+            Индекс удовлетворённости: доля оценок 4–5 минус доля оценок 1–2, в процентах от n:
+            `(c4 + c5 − c1 − c2) / n × 100`, один знак после запятой, диапазон −100…+100. Оценка 3 нейтральна.
+            `null`, если оценок нет. Название «NPS» в интерфейсе не используется.
         lowSample:
           type: boolean
           description: '`count < 20` — в интерфейсе показывается серым'
@@ -1833,12 +2003,7 @@ components:
           type: string
           enum: [active, paused]
         health:
-          allOf:
-            - $ref: '#/components/schemas/Health'
-          description: |
-            Лампочка продукта собирается из активных сервисов: `down`, если упал хотя бы один; иначе `up`, если хотя бы один жив;
-            иначе `unknown`. `responseMs` — максимум по сервисам, `checkedAt` — самая свежая проверка.
-            ОТКРЫТО: правило агрегации подтвердить.
+          $ref: '#/components/schemas/ProductHealth'
         rating:
           $ref: '#/components/schemas/RatingStats'
         services:
