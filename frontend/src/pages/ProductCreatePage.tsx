@@ -1,13 +1,12 @@
 // Регистрация продукта (сценарий 1 ТЗ).
-// После создания сразу выпускаем публичный ключ и открываем вкладку «Интеграция» с кодом вставки.
+// Ключи при создании не выпускаются (контракт, createProduct): после сохранения открываем вкладку «Интеграция»,
+// там владелец выпускает публичный ключ кнопкой. Так сбой выпуска ключа не оставляет полузаведённый продукт.
 import { Anchor, Button, Card, Group, Stack, TagsInput, Text, Textarea, TextInput, Title } from '@mantine/core';
 import { Link, useNavigate } from 'react-router';
-import { api, ApiError } from '../api/client';
+import { ApiError } from '../api/client';
 import { useCreateProduct, useCurrentUser } from '../api/hooks';
 import { notifyError } from '../components/notify';
 import { useApiForm } from '../lib/useApiForm';
-import { stashIssuedKey } from '../lib/oneTimeKey';
-import type { ApiKeyIssued } from '../api/types';
 
 export function ProductCreatePage() {
   const me = useCurrentUser();
@@ -37,15 +36,6 @@ export function ProductCreatePage() {
         url: form.values.url.trim(),
         ...(me.data?.isAdmin && form.values.ownerLogins.length ? { ownerLogins: form.values.ownerLogins } : {}),
       });
-      // Решение команды: при регистрации выпускаются публичный и секретный ключи.
-      // По контракту createProduct ключей не возвращает, поэтому выпускаем их здесь (см. «Расхождения», п. 2).
-      for (const type of ['public', 'secret'] as const) {
-        try {
-          stashIssuedKey(await api<ApiKeyIssued>('POST', `/products/${product.id}/keys`, { body: { type } }));
-        } catch (err) {
-          notifyError(err, `Продукт создан, но ${type === 'public' ? 'публичный' : 'секретный'} ключ не выпустился — выпустите его на вкладке «Интеграция»`);
-        }
-      }
       navigate(`/products/${product.id}/integration`, { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.code === 'DUPLICATE_URL') {
@@ -61,7 +51,7 @@ export function ProductCreatePage() {
       <div>
         <Anchor component={Link} to="/" size="sm">← Все продукты</Anchor>
         <Title order={2} mt={4}>Новый продукт</Title>
-        <Text c="dimmed" size="sm">После сохранения выпустятся публичный и секретный ключи и откроется вкладка «Интеграция» с кодом виджета.</Text>
+        <Text c="dimmed" size="sm">После сохранения откроется вкладка «Интеграция»: там вы выпустите публичный ключ и получите код виджета.</Text>
       </div>
       <Card>
         <form onSubmit={(e) => { e.preventDefault(); submit(); }} noValidate>

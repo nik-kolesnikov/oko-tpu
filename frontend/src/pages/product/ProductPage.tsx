@@ -2,9 +2,9 @@
 import { Anchor, Badge, Group, Stack, Tabs, Text, Title } from '@mantine/core';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useProduct, useServices } from '../../api/hooks';
-import type { Health } from '../../api/types';
 import { ErrorState, LoadingState } from '../../components/States';
 import { HealthDot } from '../../components/Indicators';
+import { productHealth } from '../../lib/health';
 import { NotFoundPage } from '../NotFoundPage';
 import { ApiError } from '../../api/client';
 import { OverviewTab } from './OverviewTab';
@@ -28,14 +28,6 @@ const STATUS_BADGE = {
   paused: { color: 'gray', label: 'Сбор приостановлен' },
   archived: { color: 'dark', label: 'В архиве' },
 } as const;
-
-/** Лампочка продукта по тому же правилу, что в контракте для дашборда: down, если упал хоть один сервис. */
-function productHealth(items: { health: Health }[]): Health {
-  const hs = items.map((s) => s.health);
-  const status = hs.some((h) => h.status === 'down') ? 'down' : hs.some((h) => h.status === 'up') ? 'up' : 'unknown';
-  const ms = hs.map((h) => h.responseMs).filter((x): x is number => x != null);
-  return { status, responseMs: ms.length ? Math.max(...ms) : null, checkedAt: null };
-}
 
 export function ProductPage() {
   const params = useParams();
@@ -73,7 +65,7 @@ export function ProductPage() {
           {services.data && services.data.items.length > 0 && (
             <Group gap="xs">
               <Text size="sm" c="dimmed">Сейчас:</Text>
-              <HealthDot health={productHealth(services.data.items)} withLabel />
+              <HealthDot health={productHealth(services.data.items.filter((s) => s.status === 'active').map((s) => s.health))} withLabel />
             </Group>
           )}
         </Group>

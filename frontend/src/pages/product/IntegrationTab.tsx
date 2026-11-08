@@ -1,11 +1,11 @@
 // Вкладка «Интеграция»: код вставки виджета, разрешённые сайты, ключи, настройки виджета, серверный API.
 //
-// Про ключи (frontend/CLAUDE.md):
-// - секретный ключ показываем один раз сразу после выпуска, потом очищаем состояние;
-// - ключи не кладём ни в localStorage, ни в sessionStorage.
-// ВНИМАНИЕ: по контракту listKeys отдаёт только префикс, поэтому полный публичный ключ
-// известен панели только сразу после выпуска. См. «Расхождения» в frontend/README.md.
-import { useEffect, useMemo, useState } from 'react';
+// Про ключи (frontend/CLAUDE.md, контракт listKeys):
+// - полный ключ, и публичный, и секретный, приходит только в ответе на выпуск или перевыпуск — показываем его сразу;
+// - потом виден только префикс; потерянный ключ перевыпускают и меняют код на сайтах;
+// - ключи живут только в состоянии вкладки: не в localStorage, не в sessionStorage.
+// При создании продукта ключи не выпускаются — пустое состояние с кнопкой «Выпустить публичный ключ».
+import { useMemo, useState } from 'react';
 import {
   Alert, Badge, Button, Card, Code, Group, Modal, NumberInput, SegmentedControl, Select, SimpleGrid, Stack, Switch,
   Table, Tabs, Text, Textarea, TextInput, Title,
@@ -19,7 +19,6 @@ import type { ApiKey, ApiKeyIssued, Product, WidgetSettingsInput } from '../../a
 import { CopyBlock } from '../../components/CopyBlock';
 import { EmptyState, ErrorState, LoadingState } from '../../components/States';
 import { notifyError, notifyOk } from '../../components/notify';
-import { clearIssuedKeys, peekIssuedKey } from '../../lib/oneTimeKey';
 import { formatDate, ORIGIN_RE } from '../../lib/format';
 import { embedSnippet } from '../../lib/embed';
 
@@ -30,11 +29,14 @@ const KEY_PLACEHOLDER = 'ВАШ_ПУБЛИЧНЫЙ_КЛЮЧ';
 
 export function IntegrationTab({ product }: { product: Product }) {
   const id = product.id;
-  // Ключ, выпущенный при создании продукта или только что на этой вкладке. Живёт, пока открыта вкладка.
-  const [publicKey, setPublicKey] = useState<ApiKeyIssued | null>(() => peekIssuedKey(id, 'public'));
-  // Секретный ключ, выпущенный при регистрации продукта, — сразу в окно «показать один раз».
-  const [initialSecret] = useState<ApiKeyIssued | null>(() => peekIssuedKey(id, 'secret'));
-  useEffect(() => clearIssuedKeys(), []);
+  // Публичный ключ, выпущенный только что на этой вкладке: подставляется в код вставки, пока вкладка открыта.
+  const [publicKey, setPublicKey] = useState<ApiKeyIssued | null>(null);
+  // Только что выпущенный ключ любого типа — в окно «скопируйте сейчас».
+  const [issued, setIssued] = useState<ApiKeyIssued | null>(null);
+  const onIssued = (k: ApiKeyIssued) => {
+    if (k.type === 'public') setPublicKey(k);
+    setIssued(k);
+  };
 
   if (product.status === 'archived') {
     return <Alert color="gray" title="Продукт в архиве">Виджет и приём оценок отключены, ключи отозваны.</Alert>;
@@ -45,9 +47,10 @@ export function IntegrationTab({ product }: { product: Product }) {
       {product.status === 'paused' && (
         <Alert color="yellow" icon={<IconAlertTriangle size={18} />}>Сбор оценок приостановлен: виджет не показывается, API отвечает отказом. Включить можно в «Настройках».</Alert>
       )}
-      <EmbedCard productId={id} publicKey={publicKey} />
+      <EmbedCard productId={id} publicKey={publicKey} onIssued={onIssued} />
       <OriginsCard productId={id} />
-      <KeysCard productId={id} onPublicIssued={setPublicKey} initialSecret={initialSecret} />
+      <KeysCard productId={id} onIssued={onIssued} />
+      <IssuedKeyModal issued={issued} onClose={() => setIssued(null)} />
       <WidgetSettingsCard productId={id} />
       <ServerApiCard />
     </Stack>
@@ -55,8 +58,11 @@ export function IntegrationTab({ product }: { product: Product }) {
 }
 
 // ── Код вставки ──
-function EmbedCard({ productId, publicKey }: { productId: number; publicKey: ApiKeyIssued | null }) {
+function EmbedCard({ productId, publicKey, onIssued }: { productId: number; publicKey: ApiKeyIssued | null; onIssued: (k: ApiKeyIssued) => void }) {
   const services = useServices(productId);
+  const keys = useKeys(productId, false);
+  const create = useCreateKey(productId);
+  const hasActivePublic = keys.data?.items.some((k) => k.type === 'public' && !k.revokedAt) ?? false;
   const [serviceId, setServiceId] = useState('');
   const [version, setVersion] = useState('');
   const key = publicKey?.key ?? KEY_PLACEHOLDER;
@@ -78,30 +84,41 @@ function EmbedCard({ productId, publicKey }: { productId: number; publicKey: Api
       <Text size="sm" c="dimmed" mb="sm">Вставьте этот код на все страницы сайта перед &lt;/body&gt;. Виджет подключается после загрузки страницы и не тормозит её; если сервер ОКО недоступен, он просто не появится.</Text>
       {publicKey ? (
         <Alert color="teal" icon={<IconKey size={18} />} mb="sm" title="Публичный ключ выпущен">
-          <Text size="sm" mb={6}>Скопируйте код сейчас: полный ключ показывается только один раз.</Text>
+          <Text size="sm" mb={6}>Ключ уже подставлен в код ниже. Скопируйте код сейчас: после перезагрузки страницы полный ключ больше не покажется.</Text>
           <CopyBlock value={publicKey.key} label="Копировать ключ" />
         </Alert>
+      ) : keys.isPending ? <LoadingState /> : keys.error ? <ErrorState error={keys.error} onRetry={() => keys.refetch()} /> : !hasActivePublic ? (
+        <EmptyState title="Публичного ключа ещё нет" action={
+          <Button leftSection={<IconKey size={16} />} loading={create.isPending}
+            onClick={() => create.mutate('public', { onSuccess: onIssued, onError: (e) => notifyError(e) })}>
+            Выпустить публичный ключ
+          </Button>
+        }>
+          Ключ нужен, чтобы виджет отправлял оценки этого продукта. Код вставки появится сразу после выпуска.
+        </EmptyState>
       ) : (
-        <Alert color="gray" mb="sm" title="Полный ключ уже не показывается">
-          <Text size="sm">Подставьте публичный ключ, который вы сохранили при выпуске. Если он потерян — нажмите «Перевыпустить» в блоке «Ключи» ниже: старый ключ перестанет работать, и код на сайте нужно будет обновить.</Text>
+        <Alert color="gray" mb="sm" title="Полный ключ показывается только при выпуске">
+          <Text size="sm">Подставьте в код публичный ключ, который вы сохранили при выпуске. Если он потерян, восстановить его нельзя: нажмите «Перевыпустить» в блоке «Ключи» ниже. Старый ключ сразу перестанет работать, поэтому код вставки нужно будет заменить на всех сайтах продукта.</Text>
         </Alert>
       )}
-      <Group grow mb="sm" align="flex-end">
-        <Select label="Привязать к сервису" data={[{ value: '', label: 'Весь продукт' }, ...(services.data?.items ?? []).map((s) => ({ value: String(s.id), label: s.name }))]}
-          value={serviceId} onChange={(v) => setServiceId(v ?? '')} allowDeselect={false} />
-        <TextInput label="Версия продукта (необязательно)" placeholder="2.4.1" value={version} onChange={(e) => setVersion(e.currentTarget.value.trim().slice(0, 50))} />
-      </Group>
-      <Tabs defaultValue="html">
-        <Tabs.List>
-          <Tabs.Tab value="html">HTML</Tabs.Tab>
-          <Tabs.Tab value="php">PHP</Tabs.Tab>
-          <Tabs.Tab value="react">React</Tabs.Tab>
-        </Tabs.List>
-        {(['html', 'php', 'react'] as const).map((k) => (
-          <Tabs.Panel key={k} value={k} pt="sm"><CopyBlock value={snippets[k]} block label="Копировать код" /></Tabs.Panel>
-        ))}
-      </Tabs>
-      <Text size="xs" c="dimmed" mt="sm">Виджет показывается только на сайтах из списка «Разрешённые сайты».</Text>
+      {(publicKey || hasActivePublic) && (<>
+        <Group grow mb="sm" align="flex-end">
+          <Select label="Привязать к сервису" data={[{ value: '', label: 'Весь продукт' }, ...(services.data?.items ?? []).map((s) => ({ value: String(s.id), label: s.name }))]}
+            value={serviceId} onChange={(v) => setServiceId(v ?? '')} allowDeselect={false} />
+          <TextInput label="Версия продукта (необязательно)" placeholder="2.4.1" value={version} onChange={(e) => setVersion(e.currentTarget.value.trim().slice(0, 50))} />
+        </Group>
+        <Tabs defaultValue="html">
+          <Tabs.List>
+            <Tabs.Tab value="html">HTML</Tabs.Tab>
+            <Tabs.Tab value="php">PHP</Tabs.Tab>
+            <Tabs.Tab value="react">React</Tabs.Tab>
+          </Tabs.List>
+          {(['html', 'php', 'react'] as const).map((k) => (
+            <Tabs.Panel key={k} value={k} pt="sm"><CopyBlock value={snippets[k]} block label="Копировать код" /></Tabs.Panel>
+          ))}
+        </Tabs>
+        <Text size="xs" c="dimmed" mt="sm">Виджет показывается только на сайтах из списка «Разрешённые сайты».</Text>
+      </>)}
     </Card>
   );
 }
@@ -138,18 +155,13 @@ function OriginsCard({ productId }: { productId: number }) {
 }
 
 // ── Ключи ──
-function KeysCard({ productId, onPublicIssued, initialSecret }: { productId: number; onPublicIssued: (k: ApiKeyIssued) => void; initialSecret: ApiKeyIssued | null }) {
+function KeysCard({ productId, onIssued }: { productId: number; onIssued: (k: ApiKeyIssued) => void }) {
   const [showRevoked, setShowRevoked] = useState(false);
   const keys = useKeys(productId, showRevoked);
   const create = useCreateKey(productId);
   const reissue = useReissueKey(productId);
   const revoke = useRevokeKey(productId);
-  const [issued, setIssued] = useState<ApiKeyIssued | null>(initialSecret); // показ один раз
 
-  const onIssued = (k: ApiKeyIssued) => {
-    if (k.type === 'public') onPublicIssued(k);
-    setIssued(k);
-  };
   const doReissue = (k: ApiKey) => {
     if (!window.confirm(`Перевыпустить ${k.type === 'public' ? 'публичный' : 'секретный'} ключ ${k.keyPrefix}…? Старый ключ сразу перестанет работать.`)) return;
     reissue.mutate(k.id, { onSuccess: onIssued, onError: (e) => notifyError(e) });
@@ -199,21 +211,26 @@ function KeysCard({ productId, onPublicIssued, initialSecret }: { productId: num
         </Table.ScrollContainer>
       )}
       <Switch mt="sm" size="xs" label="Показать отозванные" checked={showRevoked} onChange={(e) => setShowRevoked(e.currentTarget.checked)} />
-
-      <Modal opened={!!issued} onClose={() => setIssued(null)} title={issued?.type === 'secret' ? 'Новый секретный ключ' : 'Новый публичный ключ'} closeOnClickOutside={false}>
-        {issued && (
-          <Stack>
-            <Alert color={issued.type === 'secret' ? 'orange' : 'teal'} icon={<IconAlertTriangle size={18} />}>
-              {issued.type === 'secret'
-                ? 'Скопируйте ключ сейчас и сохраните в настройках вашего сервера (.env). Мы показываем его один раз и больше не сможем показать.'
-                : 'Скопируйте ключ сейчас. Код вставки на этой вкладке уже обновлён, но после перезагрузки страницы полный ключ больше не покажется.'}
-            </Alert>
-            <CopyBlock value={issued.key} label="Копировать ключ" />
-            <Group justify="flex-end"><Button onClick={() => setIssued(null)}>Я сохранил ключ</Button></Group>
-          </Stack>
-        )}
-      </Modal>
     </Card>
+  );
+}
+
+// Только что выпущенный ключ: показываем один раз, потом состояние очищается.
+function IssuedKeyModal({ issued, onClose }: { issued: ApiKeyIssued | null; onClose: () => void }) {
+  return (
+    <Modal opened={!!issued} onClose={onClose} title={issued?.type === 'secret' ? 'Новый секретный ключ' : 'Новый публичный ключ'} closeOnClickOutside={false}>
+      {issued && (
+        <Stack>
+          <Alert color={issued.type === 'secret' ? 'orange' : 'teal'} icon={<IconAlertTriangle size={18} />}>
+            {issued.type === 'secret'
+              ? 'Скопируйте ключ сейчас и сохраните в настройках вашего сервера (.env). Мы показываем его один раз и больше не сможем показать.'
+              : 'Скопируйте ключ сейчас. Код вставки на этой вкладке уже обновлён, но после перезагрузки страницы полный ключ больше не покажется. Потеряете — придётся перевыпустить ключ и заменить код на сайтах.'}
+          </Alert>
+          <CopyBlock value={issued.key} label="Копировать ключ" />
+          <Group justify="flex-end"><Button onClick={onClose}>Я сохранил ключ</Button></Group>
+        </Stack>
+      )}
+    </Modal>
   );
 }
 
