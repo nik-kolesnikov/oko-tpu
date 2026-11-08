@@ -53,7 +53,7 @@ public class RatingIntakeService {
 
     public long submitFromWidget(String apiKey, String origin, String clientIp, WidgetRatingRequest request) {
         ResolvedKey key = requireKey(apiKey, KeyType.PUBLIC);
-        requireOrigin(origin, key.productId());
+        requireOrigin(origin);
         rateLimiter.check("widget-rating:key:" + key.keyId(), limits.widgetRatingPerKey());
         rateLimiter.check("rating:ip:" + clientIp, limits.ratingPerIp());
         validate(request);
@@ -86,16 +86,12 @@ public class RatingIntakeService {
     }
 
     /**
-     * Запрос из нашего iframe приходит с нашим Origin; если loader.js будет слать оценку напрямую — с сайта продукта.
-     * Принимаем оба варианта (пункт ОТКРЫТО в спецификации). Origin — не аутентификация, а лишь ещё один фильтр.
+     * Оценку шлёт только наш iframe, поэтому Origin — всегда origin ОКО. Сайты продукта проверяет браузер раньше,
+     * по frame-ancestors на /widget/frame. Origin — не аутентификация, а лишь ещё один фильтр.
      */
-    private void requireOrigin(String origin, long productId) {
+    private void requireOrigin(String origin) {
         Optional<String> normalized = OriginFormat.normalize(origin);
-        if (normalized.isEmpty()) {
-            throw ApiException.originNotAllowed();
-        }
-        String value = normalized.get();
-        if (!value.equals(ownOrigin) && !keys.allowedOrigins(productId).contains(value)) {
+        if (normalized.isEmpty() || !normalized.get().equals(ownOrigin)) {
             throw ApiException.originNotAllowed();
         }
     }

@@ -192,6 +192,10 @@ class RatingIntakeIT extends IntegrationTest {
         widget(publicKey, "https://evil.example", Map.of("score", 5, "raterId", "browser-uuid-0001"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));
+        // Сайт продукта из allowed_origin тоже не принимается: оценку шлёт только iframe с origin ОКО.
+        widget(publicKey, SITE, Map.of("score", 5, "raterId", "browser-uuid-0001"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));
         widget(publicKey, null, Map.of("score", 5, "raterId", "browser-uuid-0001"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));

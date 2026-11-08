@@ -62,6 +62,10 @@ logging:
 oko:
   public-origin: ${OKO_PUBLIC_ORIGIN:}
   admin-logins: ${OKO_ADMIN_LOGINS:}
+  # Вход админа по паролю, пока нет SSO ТПУ. Обе пустые — выключен. Пароль не короче 16 символов.
+  password-login:
+    login: ${OKO_ADMIN_LOGIN:}
+    password: ${OKO_ADMIN_PASSWORD:}
   rater-hmac-secret: ${OKO_RATER_HMAC_SECRET:}
   dedup-window: 14d
   monitoring:
@@ -72,3 +76,5 @@ oko:
     rating-per-ip: 60
     widget-config-per-key: 1200
     widget-config-per-ip: 300
+    password-login-per-ip: 5
+    password-login-total: 20
