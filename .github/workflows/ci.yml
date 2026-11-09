@@ -1,9 +1,8 @@
 # CI ОКО на GitHub Actions (перенесён с кодлаба ТПУ, бывший .gitlab-ci.yml).
 #
 # PR и push:   backend-verify, deploy-verify, frontend-verify, widget-e2e
-# PR:          backend-image собирает образ в tar (проверка сборки, без публикации)
-# push в dev/main: backend-image публикует ghcr.io/<owner>/oko-tpu/backend:<sha> и :<ветка>;
-#              VPS забирает его по таймеру (deploy/vps/pull.sh)
+# PR:          образы backend/frontend собираются без публикации.
+# push в dev/main: оба образа публикуются с SHA, затем release публикует проверенную пару и конфигурацию.
 name: ci
 
 on:
@@ -47,6 +46,7 @@ jobs:
       - name: docker compose config (VPS)
         env:
           OKO_BACKEND_IMAGE: example.invalid/oko/backend:dev
+          OKO_FRONTEND_IMAGE: example.invalid/oko/frontend:dev
           OKO_DOMAIN: oko.example.org
           OKO_ACME_EMAIL: admin@example.org
           OKO_DB_PASSWORD: validation-only
@@ -75,6 +75,47 @@ jobs:
           name: frontend-static
           retention-days: 14
           path: frontend/dist-deploy/
+
+  frontend-image:
+    runs-on: ubuntu-latest
+    needs: [frontend-verify, deploy-verify]
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: frontend-image-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build:deploy
+        working-directory: frontend
+      - name: Сборка образа frontend (PR)
+        if: github.event_name != 'push'
+        run: docker build -f deploy/vps/frontend.Dockerfile -t oko-frontend:pr-check .
+      - name: Публикация образа frontend (dev / main)
+        if: github.event_name == 'push'
+        env:
+          BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch_head=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          if [ "$branch_head" != "$GITHUB_SHA" ]; then
+            echo "Ветка ушла вперёд: frontend для устаревшего коммита не публикуем."
+            exit 0
+          fi
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/frontend"
+          docker build -f deploy/vps/frontend.Dockerfile -t "$image:$GITHUB_SHA" .
+          docker push "$image:$GITHUB_SHA"
+          docker tag "$image:$GITHUB_SHA" "$image:$BRANCH"
+          docker push "$image:$BRANCH"
 
   # Виджет в настоящем Chromium: сервер выключен, 500, ответ 10 с, чужой сайт, три стека (HTML, PHP, React).
   widget-e2e:
@@ -142,3 +183,35 @@ jobs:
             com.google.cloud.tools:jib-maven-plugin:3.5.2:build \
             -Dimage="$image:$GITHUB_SHA" -Djib.to.tags="$BRANCH"
           echo "Опубликовано: $image:$GITHUB_SHA и :$BRANCH" >> "$GITHUB_STEP_SUMMARY"
+
+  release-bundle:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [backend-image, frontend-image, widget-e2e]
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: release-bundle-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+      - name: Публикация проверенного выпуска
+        env:
+          BRANCH: ${{ github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          branch_head=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          if [ "$branch_head" != "$GITHUB_SHA" ]; then
+            echo "Ветка ушла вперёд: устаревший выпуск не публикуем."
+            exit 0
+          fi
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '{"sha":"%s","backend":"%s/backend:%s","frontend":"%s/frontend:%s"}\n' \
+            "$GITHUB_SHA" "$repo" "$GITHUB_SHA" "$repo" "$GITHUB_SHA" > release.json
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker build -f deploy/vps/release.Dockerfile -t "$repo/release:$GITHUB_SHA" .
+          docker push "$repo/release:$GITHUB_SHA"
+          docker tag "$repo/release:$GITHUB_SHA" "$repo/release:$BRANCH"
+          docker push "$repo/release:$BRANCH"
+          echo "Опубликован комплект $repo/release:$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

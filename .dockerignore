@@ -1,0 +1,10 @@
+.git
+**/node_modules
+**/target
+**/.env
+**/.env.*
+**/secrets
+frontend/dist
+frontend/widget/dist
+frontend/coverage
+**/*.log
