@@ -48,7 +48,8 @@ public class SecurityConfig {
                                    SecurityContextRepository securityContextRepository) throws Exception {
         http.authorizeHttpRequests(auth -> auth
                         .requestMatchers(ApiPaths.V1 + "/auth/login", ApiPaths.V1 + "/auth/callback",
-                                ApiPaths.V1 + "/auth/logout", ApiPaths.V1 + "/auth/dev-login").permitAll()
+                                ApiPaths.V1 + "/auth/logout", ApiPaths.V1 + "/auth/dev-login",
+                                ApiPaths.V1 + "/auth/password-login").permitAll()
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html", "/error").permitAll()
                         .anyRequest().authenticated())
                 .csrf(csrf -> csrf
