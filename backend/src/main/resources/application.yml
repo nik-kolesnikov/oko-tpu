@@ -70,6 +70,8 @@ oko:
   dedup-window: 14d
   monitoring:
     stale-after: 5m
+    # Shared only with the monitoring sender. Empty disables event ingestion with 503.
+    event-token: ${OKO_MONITORING_EVENT_TOKEN:}
   rate-limit:
     widget-rating-per-key: 300
     server-rating-per-key: 1200
