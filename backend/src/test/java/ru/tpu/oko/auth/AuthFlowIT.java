@@ -130,6 +130,15 @@ class AuthFlowIT extends IntegrationTest {
                 .andExpect(content().string(containsString("&lt;script&gt;")));
     }
 
+    @Test
+    void passwordLoginIsOffByDefault() throws Exception {
+        // OKO_ADMIN_LOGIN и OKO_ADMIN_PASSWORD не заданы — страницы входа по паролю нет, вход идёт через SSO (здесь — заглушку).
+        perform(get(API + "/auth/password-login")).andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+        perform(post(API + "/auth/password-login").with(xsrf()).param("login", ADMIN).param("password", "x".repeat(20)))
+                .andExpect(status().isNotFound());
+    }
+
     private String startLogin(MockHttpSession session, String returnTo) throws Exception {
         var request = get(API + "/auth/login").session(session);
         if (returnTo != null) {

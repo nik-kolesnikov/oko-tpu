@@ -9,15 +9,14 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.util.UriComponentsBuilder;
+import ru.tpu.oko.auth.service.AdminPassword;
 import ru.tpu.oko.auth.service.ExternalIdentity;
 import ru.tpu.oko.auth.service.IdentityException;
 import ru.tpu.oko.auth.service.IdentityProvider;
@@ -31,7 +30,6 @@ import ru.tpu.oko.common.security.CurrentUser;
 import ru.tpu.oko.common.security.OkoPrincipal;
 
 import java.net.URI;
-import java.util.List;
 
 @RestController
 @RequestMapping(ApiPaths.V1 + "/auth")
@@ -43,28 +41,48 @@ public class AuthController {
     static final String RETURN_TO_ATTR = "oko.auth.returnTo";
 
     private final ObjectProvider<IdentityProvider> identityProvider;
+    private final AdminPassword adminPassword;
     private final LoginService loginService;
     private final CurrentUser currentUser;
-    private final SecurityContextRepository securityContextRepository;
+    private final SessionSignIn sessionSignIn;
     private final URI callbackUri;
 
-    public AuthController(ObjectProvider<IdentityProvider> identityProvider, LoginService loginService,
-                          CurrentUser currentUser, SecurityContextRepository securityContextRepository,
+    public AuthController(ObjectProvider<IdentityProvider> identityProvider, AdminPassword adminPassword,
+                          LoginService loginService, CurrentUser currentUser, SessionSignIn sessionSignIn,
                           OkoProperties properties) {
         this.identityProvider = identityProvider;
+        this.adminPassword = adminPassword;
         this.loginService = loginService;
         this.currentUser = currentUser;
-        this.securityContextRepository = securityContextRepository;
+        this.sessionSignIn = sessionSignIn;
         this.callbackUri = URI.create(properties.publicOrigin() + ApiPaths.V1 + "/auth/callback");
         if (identityProvider.getIfAvailable() == null) {
-            log.warn("IdentityProvider не настроен: вход в панель отвечает 503. SSO ТПУ ещё не подключён, "
-                    + "заглушка доступна только в профиле dev");
+            if (adminPassword.enabled()) {
+                log.warn("IdentityProvider не настроен: вход в панель — только админ по паролю (OKO_ADMIN_LOGIN)");
+            } else {
+                log.warn("IdentityProvider не настроен: вход в панель отвечает 503. SSO ТПУ ещё не подключён, "
+                        + "заглушка доступна только в профиле dev, вход админа по паролю выключен");
+            }
         }
     }
 
+    /**
+     * Панель всегда начинает вход здесь. Есть SSO — уходим в SSO (в dev — на заглушку). Нет SSO, но включён вход
+     * админа по паролю — на его страницу. Нет ни того, ни другого — 503.
+     */
     @GetMapping("/login")
     public ResponseEntity<Void> login(@RequestParam(required = false) String returnTo, HttpServletRequest request) {
-        IdentityProvider provider = requireProvider();
+        IdentityProvider provider = identityProvider.getIfAvailable();
+        if (provider == null && adminPassword.enabled()) {
+            return redirect(UriComponentsBuilder.fromPath(PasswordLoginController.PATH)
+                    .queryParam("returnTo", ReturnTo.sanitize(returnTo))
+                    .encode()
+                    .build()
+                    .toUri());
+        }
+        if (provider == null) {
+            throw ApiException.unavailable("Вход через SSO ТПУ ещё не подключён");
+        }
         String state = Crypto.randomToken(32);
         HttpSession session = request.getSession(true);
         session.setAttribute(STATE_ATTR, state);
@@ -96,14 +114,7 @@ public class AuthController {
             throw ApiException.unavailable("Сервис входа временно недоступен");
         }
         OkoPrincipal principal = loginService.upsert(identity);
-
-        // Новый идентификатор сессии после входа — защита от фиксации сессии.
-        request.changeSessionId();
-        SecurityContext context = SecurityContextHolder.createEmptyContext();
-        context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
-                principal, null, List.of()));
-        SecurityContextHolder.setContext(context);
-        securityContextRepository.saveContext(context, request, response);
+        sessionSignIn.signIn(principal, request, response);
 
         return redirect(URI.create(ReturnTo.sanitize(returnTo)));
     }
