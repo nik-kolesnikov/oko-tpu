@@ -11,19 +11,22 @@ push / PR → GitHub Actions
               ├─ deploy-verify: shellcheck, тесты pull.sh, docker compose config
               ├─ frontend-verify: типы, тесты, артефакт frontend-static (панель + виджет)
               ├─ widget-e2e: виджет в Chromium на HTML / PHP / React
-              └─ backend-image: Jib без Docker-демона
-                   └─ push в main / dev → ghcr.io/<owner>/oko-tpu/backend
+              ├─ backend-image + frontend-image: образы одного коммита
+              └─ release-bundle: Compose, Caddyfile, updater и адреса обоих образов
+                   └─ push в main / dev → ghcr.io/<owner>/oko-tpu/release
                                       ↑ исходящее соединение с VPS
                               systemd timer, каждые 5 минут
                                       ↓
                          PostgreSQL + backend + nginx + Caddy
 ```
 
-CI не подключается к VPS и не хранит его SSH-ключи. VPS скачивает готовый образ,
-проверяет его здоровье и сохраняет digest текущей и предыдущей версии.
+CI не подключается к VPS и не хранит его SSH-ключи. VPS скачивает проверенный
+выпуск, оба образа и Compose, проверяет здоровье и сохраняет digest текущей
+и предыдущей версии.
 По умолчанию он следит за `dev`; `main` выбирается заменой тега в `.env`.
-Исходники на VPS не компилируются. Изменения Compose, nginx и скрипта ставятся
-администратором отдельно, автоматически обновляется только backend.
+Исходники на VPS не компилируются. После однократного перехода по
+[инструкции](VPS_AUTO_UPDATE.md) Compose, Caddyfile, скрипт, backend,
+панель и виджет обновляются таймером.
 
 Инструкция для VPS рассчитана на чистую Ubuntu 24.04 LTS x86_64 с systemd и sudo.
 Runner кодлаба и VPS должны иметь одну архитектуру: CI пока не собирает multi-platform образ.
@@ -89,12 +92,13 @@ Workflow — `.github/workflows/ci.yml`, раннеры `ubuntu-latest` (Docker 
 - Settings → Collaborators: добавить команду.
 - Не добавлять в Actions пароль БД, HMAC-секрет или SSH-ключ VPS.
 
-В PR запускаются тесты и сборка образа в tar, образ не публикуется.
-После merge в `dev` успешный pipeline публикует
-`ghcr.io/<owner>/oko-tpu/backend:<полный SHA коммита>` и `:dev`; для `main` аналогично.
+В PR запускаются тесты и проверочные сборки обоих образов без публикации.
+После merge в `dev` успешный pipeline публикует образы backend и frontend
+с полным SHA коммита, затем пакет `release:<полный SHA>` и `:dev`; для `main` аналогично.
 Публикация в каждой ветке сериализована (`concurrency`), перед публикацией проверяется,
 что коммит остаётся вершиной ветки. Старый pipeline не заменяет канал устаревшим коммитом.
-Не удалять из GHCR текущий и предыдущий SHA/digest при настройке очистки.
+Не удалять из GHCR текущий и предыдущий release, backend и frontend digest
+при настройке очистки.
 
 Образ собирается из тех же исходников после успешных тестов при помощи
 [Jib](https://github.com/GoogleContainerTools/jib/tree/master/jib-maven-plugin).
@@ -133,9 +137,7 @@ sudo docker login ghcr.io --username <github-логин владельца то�
 
 ```bash
 sudo install -m 0644 ~/oko-deploy/vps/compose.yml /opt/oko/compose.yml
-sudo install -m 0644 ~/oko-deploy/vps/nginx.conf /opt/oko/nginx.conf
 sudo install -m 0644 ~/oko-deploy/vps/Caddyfile /opt/oko/Caddyfile
-sudo cp -a ~/oko-deploy/static/. /opt/oko/static/
 sudo install -m 0600 ~/oko-deploy/vps/.env.example /opt/oko/.env
 sudo install -m 0755 ~/oko-deploy/vps/pull.sh /usr/local/sbin/oko-pull
 sudo install -m 0644 ~/oko-deploy/vps/oko-pull.service /etc/systemd/system/
@@ -148,6 +150,8 @@ sudoedit /opt/oko/.env
 | Переменная | Значение |
 |---|---|
 | `OKO_BACKEND_IMAGE` | `ghcr.io/oko-tpu/oko-tpu/backend:dev` (имя в нижнем регистре) |
+| `OKO_FRONTEND_IMAGE` | `ghcr.io/oko-tpu/oko-tpu/frontend:dev` |
+| `OKO_RELEASE_IMAGE` | `ghcr.io/oko-tpu/oko-tpu/release:dev` |
 | `OKO_DOMAIN` | Домен VPS, без схемы и пути |
 | `OKO_ACME_EMAIL` | Email администратора для TLS-сертификата |
 | `OKO_DB_PASSWORD` | Случайный пароль, можно сгенерировать `openssl rand -hex 32` |
@@ -168,24 +172,13 @@ VPS не включать: она пускает кого угодно под л
 
 Публиковать ли панель до SSO — пункт 3 «Предложений», решает Алина. Если не публикуем,
 эти две переменные на публичном VPS не задаются.
-Панель и виджет — статика из `frontend/`; как её обновлять, см. ниже.
+Панель и виджет входят в образ frontend, собранный из `frontend/`.
 
-### Панель и виджет (статика)
+### Панель и виджет
 
-Timer обновляет только backend. Статику CI собирает в джобе `frontend-verify`
-(артефакт `frontend-static`: `panel/` и `widget/v1/`). Обновление вручную:
-
-1. GitHub → Actions → последний успешный запуск `ci` на `dev` → Artifacts → `frontend-static` (zip).
-2. Скопировать zip на VPS и:
-
-```bash
-unzip -q frontend-static.zip -d /tmp/oko-static
-sudo cp -a /tmp/oko-static/. /opt/oko/static/
-rm -rf /tmp/oko-static frontend-static.zip
-```
-
-nginx читает `/opt/oko/static` напрямую, перезапуск не нужен. Если `panel/` и
-`widget/v1/` обновились одновременно со сменой API, сначала дождаться нового backend.
+CI собирает `frontend/dist-deploy` и публикует образ `frontend:<SHA>`.
+Таймер ставит frontend того же коммита, что и backend. Артефакт
+`frontend-static` остаётся в CI для отладки; на VPS его копировать не нужно.
 
 ## 6. Первый запуск и таймер
 
@@ -195,8 +188,8 @@ nginx читает `/opt/oko/static` напрямую, перезапуск не
 ```bash
 cd /opt/oko
 sudo docker compose --env-file .env -f compose.yml config --quiet
-# Инфраструктурные образы ставятся отдельно, timer обновляет только backend.
-sudo docker compose --env-file .env -f compose.yml pull db nginx caddy
+# Инфраструктурные образы ставятся отдельно; nginx приходит вместе с frontend.
+sudo docker compose --env-file .env -f compose.yml pull db caddy
 sudo systemctl daemon-reload
 sudo systemctl start oko-pull.service
 sudo journalctl -u oko-pull.service -n 100 --no-pager
@@ -245,19 +238,16 @@ sudo systemctl stop oko-pull.timer
 # Если обновление уже выполняется, дождаться его окончания перед ручным откатом.
 sudo systemctl status oko-pull.service
 sudo cat /opt/oko/state/current-image
-sudo cat /opt/oko/state/previous-image
+sudo cat /opt/oko/state/current-frontend-image
+sudo cat /opt/oko/state/current-release
 ```
 
-Для ручного отката записать digest из `previous-image` в `OKO_BACKEND_IMAGE`, затем
-`sudo systemctl start oko-pull.service`. Тег ветки вернёт новые версии, поэтому
-оставить digest до исправления проблемы. После исправления вернуть `:dev` или
-`:main` и запустить timer.
+Для ручного отката используйте предыдущий release digest по
+[инструкции](VPS_AUTO_UPDATE.md#при-ошибке-и-откат). Он возвращает согласованную
+пару образов и конфигурацию.
 
-Если новый backend не проходит healthcheck, скрипт пытается восстановить предыдущий
-успешный образ и возвращает ошибку в systemd. При первом запуске предыдущей версии
-нет. При недоступном Registry ручной откат выполнять локальным Compose с
-`OKO_BACKEND_IMAGE=<сохранённый digest>` и `--pull never`, повторив этапы `apply_image`
-из `vps/pull.sh`; автоматический скрипт всегда начинает с проверки Registry.
+Если новый выпуск не проходит healthcheck, скрипт пытается восстановить
+предыдущие образы и конфигурацию и возвращает ошибку в systemd.
 
 **Миграции Flyway автоматически не откатываются.** Автообновления допустимы только
 с обратно совместимыми миграциями. Перед несовместимой миграцией остановить timer,

@@ -1,10 +1,10 @@
 // Лампочка сервиса и значение оценки — используются на всех экранах.
 import { Box, Group, Text, Tooltip } from '@mantine/core';
-import type { Health, RatingStats } from '../api/types';
+import type { Health, ProductHealth, RatingStats } from '../api/types';
 import { averageTone, formatAverage, formatDateTime, formatMs, HEALTH_COLOR, HEALTH_LABEL } from '../lib/format';
 
-/** Лампочка: зелёная — работает, красная — упал, серая — нет данных. Жёлтой нет, пока её нет в контракте. */
-export function HealthDot({ health, withLabel = false }: { health: Health; withLabel?: boolean }) {
+/** Лампочка продукта может быть жёлтой; у отдельного сервиса только up/down/unknown. */
+export function HealthDot({ health, withLabel = false }: { health: Health | ProductHealth; withLabel?: boolean }) {
   const color = `var(--mantine-color-${HEALTH_COLOR[health.status]}-6)`;
   const tip = [HEALTH_LABEL[health.status], health.responseMs != null ? formatMs(health.responseMs) : null, health.checkedAt ? `проверка ${formatDateTime(health.checkedAt)}` : null]
     .filter(Boolean)

@@ -50,10 +50,7 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: nginx:1.28-alpine
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./static:/usr/share/nginx/html:ro
+    image: ${OKO_FRONTEND_IMAGE:?set OKO_FRONTEND_IMAGE}
     depends_on:
       backend:
         condition: service_healthy
