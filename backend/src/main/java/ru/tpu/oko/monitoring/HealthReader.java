@@ -54,6 +54,10 @@ public class HealthReader {
         return result;
     }
 
+    public void clear(long serviceId) {
+        jdbc.sql("delete from service_status where service_id = :id").param("id", serviceId).update();
+    }
+
     private record Row(long serviceId, String status, Integer responseMs, Instant checkedAt) {
     }
 }

@@ -1,6 +1,6 @@
 // Правила подсчёта и отображения из «Исследование и требования» и корневого CLAUDE.md.
 // Сами числа (средняя, индекс, lowSample) считает backend; здесь только показ.
-import type { HealthStatus, RatingStats } from '../api/types';
+import type { ProductHealthStatus, RatingStats } from '../api/types';
 
 export const TZ = 'Asia/Tomsk';
 
@@ -60,8 +60,12 @@ export function shares(stats: Pick<RatingStats, 'count' | 'histogram'>) {
   return { positive: pct(c(4) + c(5)), neutral: pct(c(3)), negative: pct(c(1) + c(2)) };
 }
 
-export const HEALTH_LABEL: Record<HealthStatus, string> = { up: 'Работает', down: 'Не работает', unknown: 'Нет данных' };
-export const HEALTH_COLOR: Record<HealthStatus, string> = { up: 'green', down: 'red', unknown: 'gray' };
+export const HEALTH_LABEL: Record<ProductHealthStatus, string> = {
+  up: 'Работает', degraded: 'Часть сервисов не работает', down: 'Не работает', unknown: 'Нет данных',
+};
+export const HEALTH_COLOR: Record<ProductHealthStatus, string> = {
+  up: 'green', degraded: 'yellow', down: 'red', unknown: 'gray',
+};
 
 export function formatMs(ms: number | null | undefined): string {
   return ms == null ? '—' : `${ms.toLocaleString('ru-RU')} мс`;

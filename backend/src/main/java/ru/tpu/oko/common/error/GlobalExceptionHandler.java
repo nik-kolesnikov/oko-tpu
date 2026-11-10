@@ -108,9 +108,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     ResponseEntity<ErrorResponse> handleMethod(HttpRequestMethodNotSupportedException ex) {
-        // В enum спецификации нет отдельного кода для 405, ближайший по смыслу — NOT_FOUND.
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
-                .body(new ErrorResponse(ErrorCode.NOT_FOUND, "Метод не поддерживается", List.of()));
+                .body(new ErrorResponse(ErrorCode.METHOD_NOT_ALLOWED, "Метод не поддерживается", List.of()));
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
@@ -137,9 +136,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<ErrorResponse> handleUnexpected(Exception ex) {
         log.error("Необработанная ошибка", ex);
-        // В enum спецификации нет кода для 500 (см. docs/team/Расхождения в документах.md).
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ErrorResponse(ErrorCode.UNAVAILABLE, "Внутренняя ошибка сервера", List.of()));
+                .body(new ErrorResponse(ErrorCode.INTERNAL_ERROR, "Внутренняя ошибка сервера", List.of()));
     }
 
     private static ResponseEntity<ErrorResponse> validation(List<FieldErrorDto> details) {

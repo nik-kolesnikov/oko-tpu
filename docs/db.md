@@ -207,6 +207,13 @@ CREATE TABLE service_status_log (        -- история для процент
     checked_at   timestamptz NOT NULL
 );
 CREATE INDEX service_status_log_idx ON service_status_log (service_id, checked_at DESC);
+
+Для push-интеграции мониторинга Flyway `V2__monitoring_events.sql` добавляет журнал
+`monitoring_event(event_id PK, resource_id, payload jsonb, checked_at, event_type,
+service_id nullable, received_at)`. Журнал хранит все принятые события, включая
+непривязанные к сервису; уникальный `event_id` обеспечивает идемпотентность.
+В `service_status` добавлено поле `event_type`, чтобы при одинаковом `checked_at`
+переход `STATUS_CHANGED` не мог быть отменён `HEARTBEAT`.
 ```
 
 Две таблицы, потому что у них разные задачи. `service_status` отвечает на вопрос «жив ли сейчас», это одна строка на сервис. `service_status_log` хранит историю для процента доступности и графика отклика. Её придётся периодически чистить: например, держать 90 дней, а старше удалять. Если их API сам отдаёт историю, таблицу лога можно не делать.

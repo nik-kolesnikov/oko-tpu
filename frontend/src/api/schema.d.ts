@@ -13,11 +13,50 @@ export interface paths {
         };
         /**
          * Начать вход через SSO ТПУ
-         * @description Редирект на страницу авторизации SSO.
+         * @description Редирект на страницу авторизации SSO. Панель всегда начинает вход отсюда, способ входа выбирает backend:
+         *
+         *     1. SSO ТПУ подключён — редирект на `oauth.tpu.ru`.
+         *     2. SSO нет, но задан вход админа по паролю (`OKO_ADMIN_LOGIN` и `OKO_ADMIN_PASSWORD`) — редирект на
+         *        `/auth/password-login?returnTo=…`.
+         *     3. Ни того, ни другого — `503 UNAVAILABLE`.
+         *
+         *     В профиле `dev` вместо SSO работает заглушка: редирект на служебную страницу `/auth/dev-login`, где можно войти
+         *     под любым логином. Этой страницы нет в спецификации и нет в `prod` (это проверяет тест backend).
          */
         get: operations["login"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password-login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Страница входа админа по паролю
+         * @description Временный вход для админа ЦЭУ, пока SSO ТПУ не подключён. Работает в любом профиле, включая `prod`, но только если
+         *     заданы обе переменные `OKO_ADMIN_LOGIN` и `OKO_ADMIN_PASSWORD` (пароль не короче 16 символов, иначе backend
+         *     не стартует). По умолчанию выключен.
+         *
+         *     Это не заглушка `dev-login`: войти можно только под одним логином и только с паролем. Этот логин всегда админ.
+         *     Отдаёт серверную HTML-форму (не часть SPA) с CSRF-токеном в скрытом поле `_csrf`.
+         */
+        get: operations["getPasswordLoginPage"];
+        put?: never;
+        /**
+         * Вход админа по паролю
+         * @description Отправка HTML-формы. Логин и пароль сравниваются за постоянное время. Лимит попыток по умолчанию — 5 в минуту с одного IP
+         *     и 20 в минуту всего. Пароль и тело запроса не логируются. При успехе — новый идентификатор сессии, cookie
+         *     `OKO_SESSION` и редирект на `returnTo`.
+         */
+        post: operations["passwordLogin"];
         delete?: never;
         options?: never;
         head?: never;
@@ -117,6 +156,8 @@ export interface paths {
         /**
          * Зарегистрировать продукт
          * @description Создатель автоматически становится владельцем. Вместе с продуктом создаются настройки виджета по умолчанию.
+         *     Ключи при создании не выпускаются: владелец выпускает их отдельно (`createKey`), например кнопкой
+         *     «Выпустить публичный ключ» на вкладке «Интеграция». Так сбой выпуска одного ключа не оставляет полузаведённый продукт.
          *     Админ может передать `ownerLogins` и завести продукт за команду (тогда создатель владельцем не становится,
          *     если его логина нет в списке).
          *
@@ -267,7 +308,9 @@ export interface paths {
         };
         /**
          * Ключи продукта
-         * @description Полный ключ не возвращается никогда, только префикс для узнавания в списке.
+         * @description Полный ключ не возвращается никогда, только префикс для узнавания в списке. Это касается и публичного ключа:
+         *     целиком он виден только в ответе `createKey` и `reissueKey`. Потерянный ключ не восстанавливается —
+         *     его перевыпускают (`reissueKey`) и заменяют код вставки на всех сайтах.
          */
         get: operations["listKeys"];
         put?: never;
@@ -343,6 +386,8 @@ export interface paths {
          * Заменить список разрешённых сайтов
          * @description Список заменяется целиком (так проще для формы в панели). Дубликаты игнорируются.
          *     Формат — схема + хост + необязательный порт, без пути и завершающего `/`.
+         *     Сайты приводятся к виду, в котором браузер шлёт `Origin`: схема и хост в нижнем регистре, порт по умолчанию
+         *     убирается (`https://LK.tpu.ru:443` → `https://lk.tpu.ru`). В ответе — уже приведённый список.
          */
         put: operations["replaceOrigins"];
         post?: never;
@@ -439,9 +484,12 @@ export interface paths {
          *     `serviceId` принадлежит продукту, дубликат за 14 дней (по `rater_hash`).
          *     В одной транзакции вставляется строка в `rating` и обновляется `rating_daily` (строка продукта и, если указан сервис, строка сервиса).
          *
-         *     ОТКРЫТО: iframe живёт на нашем домене, поэтому `Origin` запроса из него совпадёт с доменом ОКО, а не с сайтом продукта.
-         *     Сайт продукта проверяет `frame-ancestors` на `/widget/frame`; здесь достаточно убедиться, что запрос пришёл с нашего origin.
-         *     Если решим слать запрос прямо из `loader.js`, `Origin` сверяется с `allowed_origin`, и нужен CORS по списку продукта.
+         *     Оценку отправляет только iframe виджета (`/widget/frame`), который живёт на домене ОКО. Поэтому `Origin` запроса
+         *     должен совпадать с публичным origin ОКО (`OKO_PUBLIC_ORIGIN`); любой другой или отсутствующий `Origin` — `403 ORIGIN_NOT_ALLOWED`.
+         *     Сайты продукта проверяются раньше: браузер не даст встроить iframe вне `allowed_origin` (`frame-ancestors` на `/widget/frame`).
+         *     Прямой запрос из `loader.js` со страницы продукта не поддерживается, CORS на этом эндпоинте нет.
+         *
+         *     Тело больше 16 КБ — `400 VALIDATION_ERROR` с `details[0].field = body`.
          */
         post: operations["submitWidgetRating"];
         delete?: never;
@@ -464,6 +512,8 @@ export interface paths {
          * @description Секретный ключ в `X-Api-Key` (мобильное приложение, бот, CI). Лимиты мягче, чем у виджета.
          *     Идентификатор оценившего (`raterId`) передаёт сам продукт, он обязателен. Сервер хранит только HMAC от него.
          *     Публичный ключ на этом эндпоинте не принимается (`401`).
+         *
+         *     Тело больше 16 КБ — `400 VALIDATION_ERROR` с `details[0].field = body`.
          */
         post: operations["submitServerRating"];
         delete?: never;
@@ -603,9 +653,8 @@ export interface paths {
          * @description Окна считаются на лету из `rating_daily`, не хранятся. Если у релиза задан `serviceId`, сравниваются оценки только этого сервиса.
          *
          *     Окно «до» — 14 дней перед днём релиза, «после» — 14 дней начиная с дня релиза.
-         *     Если в окно попадает другой релиз, окно обрезается по его дате (`clippedByReleaseId`).
-         *
-         *     ОТКРЫТО: в `architecture.md` описана обрезка только по следующему релизу; здесь окно «до» симметрично обрезается по предыдущему.
+         *     Если в окно попадает другой релиз, окно обрезается по его дате (`clippedByReleaseId`): «до» — по предыдущему релизу
+         *     того же продукта (или сервиса), «после» — по следующему. Обрезка с двух сторон, как в `architecture.md`.
          */
         get: operations["compareAroundRelease"];
         put?: never;
@@ -622,7 +671,7 @@ export interface components {
     schemas: {
         Error: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_ERROR" | "CONFLICT" | "DUPLICATE_URL" | "DUPLICATE_MONITORING_REF" | "LAST_OWNER" | "INVALID_KEY" | "ORIGIN_NOT_ALLOWED" | "PRODUCT_INACTIVE" | "DUPLICATE_RATING" | "RATE_LIMITED" | "UNAVAILABLE";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_ERROR" | "CONFLICT" | "DUPLICATE_URL" | "DUPLICATE_MONITORING_REF" | "LAST_OWNER" | "INVALID_KEY" | "ORIGIN_NOT_ALLOWED" | "PRODUCT_INACTIVE" | "DUPLICATE_RATING" | "RATE_LIMITED" | "UNAVAILABLE" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR";
             /** @description Человекочитаемое сообщение. Не содержит персональных данных и текстов оценок. */
             message: string;
             /** @description Ошибки по полям (для `VALIDATION_ERROR`) */
@@ -701,6 +750,27 @@ export interface components {
             status: components["schemas"]["HealthStatus"];
             responseMs?: number | null;
             /** Format: date-time */
+            checkedAt?: string | null;
+        };
+        /**
+         * @description Лампочка продукта — сводка статусов его активных сервисов (`HealthStatus`). Известный статус — `up` или `down`.
+         *     - `down` — есть известные статусы, и все они `down` (красная);
+         *     - `degraded` — среди известных есть и `down`, и `up` (жёлтая, «часть сервисов не работает»);
+         *     - `up` — все активные сервисы `up` (зелёная);
+         *     - `unknown` — нет активных сервисов или упавших нет, но хотя бы по одному сервису данных нет (серая).
+         *     Известное падение важнее нехватки данных: `down` + `unknown` даёт `down`, а не `unknown`, иначе серая лампочка
+         *     спрятала бы реальный сбой.
+         * @enum {string}
+         */
+        ProductHealthStatus: "up" | "degraded" | "down" | "unknown";
+        ProductHealth: {
+            status: components["schemas"]["ProductHealthStatus"];
+            /** @description Максимум по сервисам */
+            responseMs?: number | null;
+            /**
+             * Format: date-time
+             * @description Самая свежая проверка среди сервисов
+             */
             checkedAt?: string | null;
         };
         Service: {
@@ -831,8 +901,9 @@ export interface components {
              */
             average: number | null;
             /**
-             * @description Индекс в духе NPS: доля оценок «5» минус доля оценок «1–3», в процентах. `null`, если оценок нет.
-             *     ОТКРЫТО: формулу нужно утвердить с заказчиком.
+             * @description Индекс удовлетворённости: доля оценок 4–5 минус доля оценок 1–2, в процентах от n:
+             *     `(c4 + c5 − c1 − c2) / n × 100`, один знак после запятой, диапазон −100…+100. Оценка 3 нейтральна.
+             *     `null`, если оценок нет. Название «NPS» в интерфейсе не используется.
              */
             index: number | null;
             /** @description `count < 20` — в интерфейсе показывается серым */
@@ -895,12 +966,7 @@ export interface components {
             name: string;
             /** @enum {string} */
             status: "active" | "paused";
-            /**
-             * @description Лампочка продукта собирается из активных сервисов: `down`, если упал хотя бы один; иначе `up`, если хотя бы один жив;
-             *     иначе `unknown`. `responseMs` — максимум по сервисам, `checkedAt` — самая свежая проверка.
-             *     ОТКРЫТО: правило агрегации подтвердить.
-             */
-            health: components["schemas"]["Health"];
+            health: components["schemas"]["ProductHealth"];
             rating: components["schemas"]["RatingStats"];
             services: components["schemas"]["DashboardService"][];
         };
@@ -1048,6 +1114,24 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description Метод не поддерживается для этого пути (`METHOD_NOT_ALLOWED`) */
+        MethodNotAllowed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description Внутренняя ошибка сервера (`INTERNAL_ERROR`). Подробности — только в логе backend по `requestId`. */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Оценка принята */
         RatingAccepted: {
             headers: {
@@ -1094,13 +1178,99 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Редирект на SSO */
+            /** @description Редирект на SSO или на страницу входа админа по паролю */
             302: {
                 headers: {
                     Location?: string;
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getPasswordLoginPage: {
+        parameters: {
+            query?: {
+                /** @description Относительный путь панели, куда вернуть после входа. Абсолютные URL игнорируются. */
+                returnTo?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description HTML-форма входа */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            404: components["responses"]["NotFound"];
+        };
+    };
+    passwordLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    login: string;
+                    /** Format: password */
+                    password: string;
+                    returnTo?: string;
+                    /** @description CSRF-токен из скрытого поля формы */
+                    _csrf: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Вход выполнен, редирект в панель */
+            302: {
+                headers: {
+                    Location?: string;
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Неверный логин или пароль. HTML-форма с сообщением, без уточнения, что именно неверно. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
+            };
+            /** @description CSRF-токен не передан или неверен (`FORBIDDEN`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description Слишком много попыток. HTML-форма с сообщением. */
+            429: {
+                headers: {
+                    /** @description Через сколько секунд повторить */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
+                };
             };
         };
     };
@@ -1216,6 +1386,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProductPage"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
         };
     };
@@ -1463,6 +1634,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
         };
@@ -1494,7 +1666,10 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
-            /** @description Такой `monitoringRef` уже привязан к другому сервису (`DUPLICATE_MONITORING_REF`) */
+            /**
+             * @description Такой `monitoringRef` уже привязан к другому сервису (`DUPLICATE_MONITORING_REF`)
+             *     или продукт в архиве (`CONFLICT`)
+             */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1591,6 +1766,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
         };
@@ -1884,7 +2060,7 @@ export interface operations {
             201: components["responses"]["RatingAccepted"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["InvalidKey"];
-            /** @description `ORIGIN_NOT_ALLOWED` — недопустимый `Origin`, или `PRODUCT_INACTIVE` — продукт приостановлен или в архиве */
+            /** @description `ORIGIN_NOT_ALLOWED` — `Origin` не совпадает с origin ОКО, или `PRODUCT_INACTIVE` — продукт приостановлен или в архиве */
             403: {
                 headers: {
                     [name: string]: unknown;
