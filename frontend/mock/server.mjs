@@ -137,9 +137,9 @@ function stats(rows) {
     sum += r.score;
   }
   const n = rows.length;
-  // Формула индекса из контракта (ОТКРЫТО): доля «5» минус доля «1–3».
-  const fives = histogram[4].count;
-  const low = histogram[0].count + histogram[1].count + histogram[2].count;
+  // Формула индекса из контракта: доля 4–5 минус доля 1–2.
+  const fives = histogram[3].count + histogram[4].count;
+  const low = histogram[0].count + histogram[1].count;
   return {
     count: n,
     average: n ? Math.round((sum / n) * 10) / 10 : null,
@@ -274,7 +274,11 @@ route('GET', '/dashboard', (req, res, { user }) => {
     .map((p) => {
       const svcs = db.services.filter((s) => s.productId === p.id && s.status === 'active');
       const healths = svcs.map(healthOf);
-      const status = healths.some((h) => h.status === 'down') ? 'down' : healths.some((h) => h.status === 'up') ? 'up' : 'unknown';
+      // ProductHealthStatus из контракта: известный down важнее unknown; down + up — degraded.
+      const anyDown = healths.some((h) => h.status === 'down');
+      const anyUp = healths.some((h) => h.status === 'up');
+      const status = anyDown ? (anyUp ? 'degraded' : 'down')
+        : healths.length && healths.every((h) => h.status === 'up') ? 'up' : 'unknown';
       const ms = healths.map((h) => h.responseMs).filter((x) => x != null);
       const checked = healths.map((h) => h.checkedAt).filter(Boolean).sort().at(-1) ?? null;
       return {
@@ -499,7 +503,7 @@ route('PUT', '/products/{productId}/widget-settings', async (req, res, { user, p
 
 // Виджет (публичные эндпоинты)
 function widgetFailure(res) {
-  if (mode.widget === '500') return send(res, 500, { code: 'UNAVAILABLE', message: 'mock 500' }), true;
+  if (mode.widget === '500') return send(res, 500, { code: 'INTERNAL_ERROR', message: 'mock 500' }), true;
   if (mode.widget === '403') return send(res, 403), true;
   return false;
 }
@@ -548,7 +552,7 @@ route('POST', '/widget/ratings', async (req, res) => {
   if (widgetFailure(res)) return;
   const k = findKey(req, 'public');
   const p = db.products.find((x) => x.id === k.productId);
-  // iframe живёт на нашем домене, поэтому Origin должен быть нашим (см. ОТКРЫТО в контракте).
+  // Оценку шлёт только iframe на нашем домене, поэтому Origin должен быть нашим (контракт, submitWidgetRating).
   if (!SELF_ORIGINS.has(req.headers.origin)) throw new ApiError(403, 'ORIGIN_NOT_ALLOWED', 'Недопустимый Origin');
   const body = await readJson(req);
   validateRating(body, { raterMin: 8 });
@@ -718,7 +722,7 @@ const server = http.createServer(async (req, res) => {
     const pathMatches = routes.filter((r) => r.re.test(p));
     if (!pathMatches.length) throw notFound();
     const r = pathMatches.find((x) => x.method === req.method);
-    if (!r) return send(res, 405, { code: 'VALIDATION_ERROR', message: 'Метод не поддерживается' });
+    if (!r) return send(res, 405, { code: 'METHOD_NOT_ALLOWED', message: 'Метод не поддерживается' });
 
     const m = p.match(r.re);
     const params = Object.fromEntries(r.keys.map((k, i) => [k, Number(m[i + 1])]));
@@ -738,7 +742,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, e.status, { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) });
     }
     console.error(e);
-    send(res, 500, { code: 'UNAVAILABLE', message: 'Ошибка мок-сервера' });
+    send(res, 500, { code: 'INTERNAL_ERROR', message: 'Ошибка мок-сервера' });
   }
 });
 
