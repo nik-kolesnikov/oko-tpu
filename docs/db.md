@@ -19,12 +19,11 @@ CREATE TABLE app_user (
     login       text NOT NULL UNIQUE,          -- логин ТПУ
     full_name   text NOT NULL,
     email       text,
-    is_admin    boolean NOT NULL DEFAULT false, -- дублирует конфиг, см. ниже
     created_at  timestamptz NOT NULL DEFAULT now()
 );
 ```
 
-Админы ЦЭУ задаются конфигом, поэтому поле `is_admin` здесь нужно только если хотим видеть их в таблице. Если нет, убираем. Иначе будет два источника правды.
+Админы ЦЭУ задаются конфигом (`OKO_ADMIN_LOGINS` и логин входа по паролю `OKO_ADMIN_LOGIN`), поэтому колонки `is_admin` нет: иначе было бы два источника правды.
 
 ```sql
 CREATE TABLE product (
@@ -81,7 +80,7 @@ CREATE TABLE api_key (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     product_id  bigint NOT NULL REFERENCES product(id),
     key_type    text NOT NULL CHECK (key_type IN ('public', 'secret')),
-    key_prefix  text NOT NULL,                  -- первые 8 символов для отображения
+    key_prefix  text NOT NULL,                  -- pk_/sk_ и 8 символов ключа (11 всего), для отображения
     key_hash    bytea NOT NULL UNIQUE,          -- SHA-256 от ключа, сам ключ не хранится
     created_by  bigint NOT NULL REFERENCES app_user(id),
     created_at  timestamptz NOT NULL DEFAULT now(),
@@ -187,7 +186,7 @@ CREATE TABLE release_mark (
 CREATE INDEX release_product_time_idx ON release_mark (product_id, released_at);
 ```
 
-Окна «до/после» не хранятся, их считаем на лету из `rating_daily` по `released_at`. Так правило обрезки окна (следующий релиз) меняется без миграции данных.
+Окна «до/после» не хранятся, их считаем на лету из `rating_daily` по `released_at`. Так правило обрезки окна (с двух сторон: предыдущий и следующий релиз) меняется без миграции данных.
 
 ### Мониторинг
 
@@ -245,7 +244,7 @@ CREATE TABLE audit_log (                 -- кто что менял (ключи
 
 ## Открытые вопросы к структуре
 
-1. **Нужен ли `is_admin` в `app_user`**, если админы задаются конфигом? Предлагаю убрать.
+1. ~~Нужен ли `is_admin` в `app_user`~~ — решено: убран, админы только в конфиге.
 2. **Есть ли у мониторинга история?** От этого зависит `service_status_log`.
 3. **Срок хранения `rating` и `audit_log`.** Пока ничего не удаляем. Нужно решение с заказчиком.
 4. **Дедупликация через `rater_hash`** работает только если идентификатор стабилен. До SSO это cookie браузера, поэтому повторы возможны. Это уже описано в архитектуре.
