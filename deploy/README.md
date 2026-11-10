@@ -156,6 +156,7 @@ sudoedit /opt/oko/.env
 | `OKO_ACME_EMAIL` | Email администратора для TLS-сертификата |
 | `OKO_DB_PASSWORD` | Случайный пароль, можно сгенерировать `openssl rand -hex 32` |
 | `OKO_RATER_HMAC_SECRET` | Отдельный постоянный секрет: `openssl rand -hex 48` |
+| `OKO_MONITORING_EVENT_TOKEN` | Общий токен отправителя мониторинга: `openssl rand -hex 32`; тот же секрет передать как `MONITORING_EVENT_TOKEN` |
 | `OKO_ADMIN_LOGINS` | Логины ТПУ через запятую, либо пусто |
 | `OKO_ADMIN_LOGIN` | Вход админа по паролю до SSO: логин (например `oko-admin`), либо пусто |
 | `OKO_ADMIN_PASSWORD` | Пароль к нему, не короче 16 символов: `openssl rand -base64 24`, либо пусто |

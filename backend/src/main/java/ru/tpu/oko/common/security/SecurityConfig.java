@@ -2,6 +2,7 @@ package ru.tpu.oko.common.security;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -16,18 +17,37 @@ import ru.tpu.oko.common.ApiPaths;
 import ru.tpu.oko.common.error.ErrorCode;
 import ru.tpu.oko.common.error.ErrorResponse;
 import ru.tpu.oko.common.error.ErrorWriter;
+import ru.tpu.oko.monitoring.api.MonitoringBearerFilter;
 
 import java.util.List;
 
 @Configuration
 public class SecurityConfig {
 
+    /** The sender has its own bearer token and no panel session or CSRF cookie. */
+    @Bean
+    @Order(1)
+    SecurityFilterChain monitoringChain(HttpSecurity http, ErrorWriter errorWriter,
+                                        @Value("${oko.monitoring.event-token:}") String token) throws Exception {
+        http.securityMatcher(ApiPaths.V1 + "/status/events")
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .requestCache(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable)
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .logout(AbstractHttpConfigurer::disable)
+                .addFilterBefore(new MonitoringBearerFilter(token, errorWriter),
+                        org.springframework.security.web.access.intercept.AuthorizationFilter.class);
+        return http.build();
+    }
+
     /**
      * Публичные эндпоинты: виджет на чужих сайтах и серверы продуктов. Авторизация по X-Api-Key внутри модулей,
      * без сессии и CSRF. X-Frame-Options выключен: /widget/frame встраивается, защита — CSP frame-ancestors.
      */
     @Bean
-    @Order(1)
+    @Order(2)
     SecurityFilterChain publicChain(HttpSecurity http) throws Exception {
         http.securityMatcher(ApiPaths.V1 + "/widget/**", ApiPaths.V1 + "/ratings", "/actuator/health", "/actuator/health/**")
                 .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
@@ -43,7 +63,7 @@ public class SecurityConfig {
 
     /** Панель: сессия OKO_SESSION после входа через SSO, изменяющие запросы с X-XSRF-TOKEN. */
     @Bean
-    @Order(2)
+    @Order(3)
     SecurityFilterChain panelChain(HttpSecurity http, ErrorWriter errorWriter,
                                    SecurityContextRepository securityContextRepository) throws Exception {
         http.authorizeHttpRequests(auth -> auth
