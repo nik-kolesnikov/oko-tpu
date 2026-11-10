@@ -5,6 +5,8 @@ spring:
 
 oko:
   public-origin: http://oko.test
+  monitoring:
+    event-token: test-monitoring-token-0123456789abcdef
   admin-logins: admin
   rater-hmac-secret: test-hmac-secret-0123456789abcdef0123456789
   rate-limit:

@@ -33,7 +33,10 @@ services:
       OKO_DB_PASSWORD: ${OKO_DB_PASSWORD:?set OKO_DB_PASSWORD}
       OKO_PUBLIC_ORIGIN: https://${OKO_DOMAIN:?set OKO_DOMAIN}
       OKO_ADMIN_LOGINS: ${OKO_ADMIN_LOGINS:-}
+      OKO_ADMIN_LOGIN: ${OKO_ADMIN_LOGIN:-}
+      OKO_ADMIN_PASSWORD: ${OKO_ADMIN_PASSWORD:-}
       OKO_RATER_HMAC_SECRET: ${OKO_RATER_HMAC_SECRET:?set OKO_RATER_HMAC_SECRET}
+      OKO_MONITORING_EVENT_TOKEN: ${OKO_MONITORING_EVENT_TOKEN:-}
       JAVA_TOOL_OPTIONS: ${OKO_JAVA_OPTS:--Xmx1g -XX:+ExitOnOutOfMemoryError}
     depends_on:
       db:
@@ -48,10 +51,7 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: nginx:1.28-alpine
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./static:/usr/share/nginx/html:ro
+    image: ${OKO_FRONTEND_IMAGE:?set OKO_FRONTEND_IMAGE}
     depends_on:
       backend:
         condition: service_healthy

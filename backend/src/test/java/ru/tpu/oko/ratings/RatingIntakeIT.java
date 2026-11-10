@@ -79,8 +79,9 @@ class RatingIntakeIT extends IntegrationTest {
     }
 
     @Test
-    void widgetRatingFromAllowedSiteIsAccepted() throws Exception {
-        widget(publicKey, "https://LK.tpu.ru", Map.of("score", 4, "raterId", "browser-uuid-0001"))
+    void ownOriginIsComparedAfterNormalization() throws Exception {
+        // Регистр хоста и порт по умолчанию не важны: http://OKO.test:80 — это наш http://oko.test.
+        widget(publicKey, "http://OKO.test:80", Map.of("score", 4, "raterId", "browser-uuid-0001"))
                 .andExpect(status().isCreated());
     }
 
@@ -190,6 +191,10 @@ class RatingIntakeIT extends IntegrationTest {
     @Test
     void foreignOrMissingOriginIsRejected() throws Exception {
         widget(publicKey, "https://evil.example", Map.of("score", 5, "raterId", "browser-uuid-0001"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));
+        // Сайт продукта из allowed_origin тоже не принимается: оценку шлёт только iframe с origin ОКО.
+        widget(publicKey, SITE, Map.of("score", 5, "raterId", "browser-uuid-0001"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ORIGIN_NOT_ALLOWED"));
         widget(publicKey, null, Map.of("score", 5, "raterId", "browser-uuid-0001"))

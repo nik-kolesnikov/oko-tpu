@@ -1,5 +1,5 @@
 [Unit]
-Description=Pull and apply the published OKO backend image
+Description=Pull and apply the published OKO release
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service

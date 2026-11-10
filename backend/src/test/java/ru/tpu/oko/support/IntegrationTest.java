@@ -63,7 +63,7 @@ public abstract class IntegrationTest {
     @BeforeEach
     void cleanDatabase() {
         jdbc.execute("""
-                truncate table audit_log, service_status_log, service_status, release_mark, rating_daily, rating,
+                truncate table monitoring_event, audit_log, service_status_log, service_status, release_mark, rating_daily, rating,
                     widget_settings, allowed_origin, api_key, service, product_owner, product, app_user
                 restart identity cascade
                 """);

@@ -12,6 +12,7 @@ import ru.tpu.oko.common.error.ApiException;
 import ru.tpu.oko.common.error.ErrorCode;
 import ru.tpu.oko.monitoring.HealthReader;
 import ru.tpu.oko.monitoring.HealthView;
+import ru.tpu.oko.monitoring.service.StatusEventService;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -25,13 +26,15 @@ public class ProductServicesService {
     private final ServiceRepository services;
     private final ProductAccess access;
     private final HealthReader healthReader;
+    private final StatusEventService statusEvents;
     private final Clock clock;
 
     public ProductServicesService(ServiceRepository services, ProductAccess access, HealthReader healthReader,
-                                  Clock clock) {
+                                  StatusEventService statusEvents, Clock clock) {
         this.services = services;
         this.access = access;
         this.healthReader = healthReader;
+        this.statusEvents = statusEvents;
         this.clock = clock;
     }
 
@@ -51,6 +54,7 @@ public class ProductServicesService {
         requireFreeMonitoringRef(monitoringRef, -1);
         ServiceEntity service = services.saveAndFlush(new ServiceEntity(productId, request.name(),
                 UrlFormat.optionalHttpUrl("url", request.url()), monitoringRef, Instant.now(clock)));
+        statusEvents.bindPending(service.getId(), monitoringRef);
         return toDtos(List.of(service)).getFirst();
     }
 
@@ -67,9 +71,16 @@ public class ProductServicesService {
         if (request.isMonitoringRefSet()) {
             String monitoringRef = normalizeRef(request.getMonitoringRef());
             requireFreeMonitoringRef(monitoringRef, serviceId);
+            if (!java.util.Objects.equals(service.getMonitoringRef(), monitoringRef)) {
+                // A new mapping must not inherit the previous resource's lamp.
+                healthReader.clear(serviceId);
+            }
             service.setMonitoringRef(monitoringRef);
         }
         services.saveAndFlush(service);
+        if (request.isMonitoringRefSet()) {
+            statusEvents.bindPending(serviceId, service.getMonitoringRef());
+        }
         return toDtos(List.of(service)).getFirst();
     }
 

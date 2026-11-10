@@ -20,6 +20,8 @@ public record OkoProperties(
         @NotBlank String publicOrigin,
         /** Логины ТПУ админов ЦЭУ. Пустой список — админов нет. */
         List<String> adminLogins,
+        /** Вход админа по паролю до подключения SSO. По умолчанию выключен. */
+        @Valid @DefaultValue PasswordLogin passwordLogin,
         /** Секрет HMAC для raterId. Смена делает старые хэши несравнимыми. */
         @NotBlank @Size(min = 32, message = "должен быть не короче 32 символов") String raterHmacSecret,
         /** Окно «одна оценка от человека на продукт». */
@@ -34,6 +36,24 @@ public record OkoProperties(
                 .toList();
     }
 
+    /**
+     * Вход админа по паролю из OKO_ADMIN_LOGIN и OKO_ADMIN_PASSWORD. Обе пустые — вход выключен. Проверку значений
+     * делает {@link ru.tpu.oko.auth.service.AdminPassword} при старте: там сообщение об ошибке не содержит пароля.
+     */
+    public record PasswordLogin(@DefaultValue("") String login, @DefaultValue("") String password) {
+
+        public PasswordLogin {
+            login = login == null ? "" : login.trim();
+            password = password == null ? "" : password;
+        }
+
+        /** Пароль в логи и сообщения не попадает, даже через toString. */
+        @Override
+        public String toString() {
+            return "PasswordLogin[login=" + login + ", password=" + (password.isEmpty() ? "" : "******") + "]";
+        }
+    }
+
     public record Monitoring(
             /** Статус старше порога показывается как «нет данных». */
             @DefaultValue("5m") Duration staleAfter) {
@@ -45,6 +65,9 @@ public record OkoProperties(
             @DefaultValue("1200") int serverRatingPerKey,
             @DefaultValue("60") int ratingPerIp,
             @DefaultValue("1200") int widgetConfigPerKey,
-            @DefaultValue("300") int widgetConfigPerIp) {
+            @DefaultValue("300") int widgetConfigPerIp,
+            /** Попытки входа админа по паролю: с одного IP и всего. */
+            @DefaultValue("5") int passwordLoginPerIp,
+            @DefaultValue("20") int passwordLoginTotal) {
     }
 }

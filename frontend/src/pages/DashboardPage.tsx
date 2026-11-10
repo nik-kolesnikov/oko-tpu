@@ -37,7 +37,7 @@ export function DashboardPage() {
     const needle = q.trim().toLowerCase();
     return list.filter((p) => {
       if (needle && !p.name.toLowerCase().includes(needle) && !p.services.some((s) => s.name.toLowerCase().includes(needle))) return false;
-      if (onlyProblems && p.health.status !== 'down') return false;
+      if (onlyProblems && p.health.status !== 'down' && p.health.status !== 'degraded') return false;
       return true;
     });
   }, [dashboard.data, q, onlyProblems]);

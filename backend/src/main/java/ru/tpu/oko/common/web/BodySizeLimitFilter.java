@@ -19,7 +19,8 @@ import java.io.IOException;
 import java.util.Set;
 
 /**
- * Лимит тела 16 КБ на приёме оценок. По Content-Length отказываем сразу, без него — считаем байты при чтении.
+ * Лимит тела 16 КБ на приёме оценок и событий мониторинга.
+ * По Content-Length отказываем сразу, без него — считаем байты при чтении.
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
@@ -27,7 +28,8 @@ public class BodySizeLimitFilter extends OncePerRequestFilter {
 
     public static final int MAX_BODY_BYTES = 16 * 1024;
 
-    private static final Set<String> LIMITED_PATHS = Set.of(ApiPaths.V1 + "/ratings", ApiPaths.V1 + "/widget/ratings");
+    private static final Set<String> LIMITED_PATHS = Set.of(ApiPaths.V1 + "/ratings", ApiPaths.V1 + "/widget/ratings",
+            ApiPaths.V1 + "/status/events");
 
     private final ErrorWriter errorWriter;
 
