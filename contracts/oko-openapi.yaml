@@ -54,7 +54,11 @@ paths:
       operationId: login
       summary: Начать вход через SSO ТПУ
       description: |
-        Редирект на страницу авторизации SSO. Панель всегда начинает вход отсюда, способ входа выбирает backend:
+        Редирект браузера на внешний `GET https://oauth.tpu.ru/authorize` с `client_id`, `redirect_uri`
+        (наш `/api/v1/auth/callback`), `response_type=code` и случайным `state`. Значение `state` сохраняется
+        в серверной сессии и сверяется в `/auth/callback`. Сам backend ОКО не получает пароль пользователя ТПУ.
+
+        Панель всегда начинает вход отсюда, способ входа выбирает backend:
 
         1. SSO ТПУ подключён — редирект на `oauth.tpu.ru`.
         2. SSO нет, но задан вход админа по паролю (`OKO_ADMIN_LOGIN` и `OKO_ADMIN_PASSWORD`) — редирект на
@@ -178,8 +182,11 @@ paths:
       operationId: loginCallback
       summary: Возврат из SSO
       description: |
-        Обменивает `code` на токен, создаёт или обновляет запись `app_user`, выставляет cookie `OKO_SESSION`
-        и перенаправляет на `returnTo`. Запрос с `code` не логируется целиком.
+        Callback ОКО, на который внешний `oauth.tpu.ru/authorize` возвращает `code` и `state`.
+        Backend сравнивает `state` с одноразовым значением, сохранённым в той же серверной сессии при `/auth/login`;
+        несовпадение отклоняется. При успехе backend обменивает `code` через внешний `GET /access_token`,
+        получает профиль пользователя через внешний `GET /user`, создаёт или обновляет `app_user`, выставляет
+        cookie `OKO_SESSION` и перенаправляет на `returnTo`. Запросы с `code`, токенами и `client_secret` не логируются.
       security: []
       parameters:
         - name: code
@@ -213,10 +220,14 @@ paths:
     post:
       tags: [Авторизация]
       operationId: logout
-      summary: Выйти
+      summary: Выйти из ОКО
+      description: |
+        Завершает только локальную сессию ОКО и инвалидирует cookie `OKO_SESSION`.
+        Сам по себе этот вызов **не завершает глобальную SSO-сессию ТПУ**. Для выхода также из SSO
+        браузер должен быть перенаправлен на внешний `GET https://oauth.tpu.ru/auth/logout?redirect=...`.
       responses:
         '204':
-          description: Сессия завершена
+          description: Локальная сессия ОКО завершена
 
   /auth/me:
     get:
