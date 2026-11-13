@@ -18,9 +18,9 @@
 ### Две группы endpoint'ов
 
 1. **Внутренние endpoint'ы ОКО** — frontend вызывает их на нашем backend. Они уже предусмотрены в проекте.
-2. **Внешние endpoint'ы ТПУ** — вызываются браузером пользователя или backend-сервисом ОКО на `https://oauth.tpu.ru`. Это не маршруты, которые нужно реализовывать в Spring Boot ОКО; их нужно описать в OpenAPI как внешний сервис и реализовать вызовы к ним в `IdentityProvider`.
+2. **Внешние endpoint'ы ТПУ** — вызываются браузером пользователя или backend-сервисом ОКО на `https://oauth.tpu.ru`. Это не маршруты, которые нужно реализовывать в Spring Boot ОКО; они описаны в отдельном [контракте SSO ТПУ](../../contracts/tpu-sso-openapi.yaml), а вызовы к ним нужно реализовать в `IdentityProvider`.
 
-В OpenAPI у ОКО базовый server — `/api/v1`. Для внешних операций ТПУ необходимо переопределить `servers` на `https://oauth.tpu.ru`, иначе Swagger будет ошибочно считать их маршрутами ОКО.
+[Контракт ОКО](../../contracts/oko-openapi.yaml) содержит только маршруты backend ОКО с базовым `servers: /api/v1`. Контракт внешнего SSO использует `servers: https://oauth.tpu.ru`. Генерация типов frontend из контракта ОКО поэтому не включает операции ТПУ.
 
 ---
 
@@ -71,7 +71,7 @@ sequenceDiagram
 
 ### 3.1. Внутренние endpoint'ы ОКО
 
-Все пути ниже указаны относительно `servers: /api/v1`.
+Все пути ниже описаны в [контракте ОКО](../../contracts/oko-openapi.yaml) и указаны относительно `servers: /api/v1`.
 
 | Метод и путь | Кто вызывает | Назначение | Статус в текущем проекте |
 |---|---|---|---|
@@ -86,7 +86,7 @@ sequenceDiagram
 
 ### 3.2. Внешние endpoint'ы ТПУ
 
-Для всех внешних операций базовый адрес:
+Все внешние операции описаны в [контракте SSO ТПУ](../../contracts/tpu-sso-openapi.yaml). Их базовый адрес:
 
 ```text
 https://oauth.tpu.ru
@@ -101,7 +101,7 @@ https://oauth.tpu.ru
 | `GET /access_token` с `grant_type=refresh_token` | Backend ОКО | Обновить access token по refresh token | Опционален для MVP, если токен нужен только на время входа |
 | `GET /auth/logout` | Браузер пользователя (через redirect) | Завершить глобальную SSO-сессию ТПУ | Нужен, если кнопка «Выйти» должна завершать и SSO-сессию ТПУ |
 
-В OpenAPI `/access_token` должен быть **одной операцией** с разными наборами параметров в зависимости от `grant_type`. Не надо заводить два одинаковых пути `/access_token`.
+В контракте SSO ТПУ `/access_token` описан **одной операцией** с разными наборами параметров в зависимости от `grant_type`.
 
 Для `check-token` и `user` указывается `security: Bearer`. Для `authorize`, `access_token` и `auth/logout` OAuth Bearer не используется: они принимают query-параметры или запускаются редиректом.
 
@@ -111,7 +111,7 @@ https://oauth.tpu.ru
 
 - `TpuTokenResponse` — `access_token`, `expires_in`, `refresh_token`.
 - `TpuTokenCheckResponse` — `message`, `body`.
-- `TpuTokenInfo` — `created`, `expired`, `client_id`, `type`, `user_id`, `lichnost_id`, `username`.
+- `TpuTokenInfo` — обязательные `created`, `expired`, `client_id`, `type`; идентификаторы `user_id`, `lichnost_id` и `username` могут отсутствовать у системного токена. Для персонального входа backend отдельно проверяет идентификатор пользователя и логин.
 - `TpuUserProfile` — `user_id`, `lichnost_id`, `login`, `full_name`, `first_name`, `last_name`, `patronymic`, `email`, `elements`, `message`.
 
 Точные форматы ошибок внешнего SSO в опубликованной инструкции не стандартизированы. В OpenAPI лучше описать общий `default` response с пояснением, что формат ошибки требуется подтвердить у ТПУ, а не придумывать конкретные поля.
@@ -373,16 +373,16 @@ POST /api/v1/auth/logout
 
 ## 6. Как OpenAPI должен быть устроен технически
 
-### 6.1. Разделить серверы
+### 6.1. Разделить контракты
 
-В контракте ОКО основной server остаётся:
+В [контракте ОКО](../../contracts/oko-openapi.yaml) описаны только маршруты backend ОКО:
 
 ```yaml
 servers:
   - url: /api/v1
 ```
 
-Каждая внешняя операция ТПУ должна задавать собственный server:
+В [контракте SSO ТПУ](../../contracts/tpu-sso-openapi.yaml) базовый server задан один раз для всех внешних операций:
 
 ```yaml
 servers:
@@ -390,7 +390,7 @@ servers:
     description: Внешний OAuth-сервис ТПУ
 ```
 
-Тогда `GET /authorize` в Swagger будет означать `GET https://oauth.tpu.ru/authorize`, а не `/api/v1/authorize` ОКО.
+Так `GET /authorize` относится к `https://oauth.tpu.ru/authorize`, а генератор типов frontend, читающий только контракт ОКО, не принимает его за маршрут backend.
 
 ### 6.2. Особые правила параметров
 
@@ -398,19 +398,19 @@ servers:
 - Для `/access_token` параметры зависят от `grant_type`:
   - `authorization_code`: `client_id`, `client_secret`, `grant_type`, `code`, `state`, `redirect_uri`;
   - `refresh_token`: `client_id`, `client_secret`, `grant_type`, `refresh_token`.
-- `client_secret`, `code`, `access_token`, `refresh_token` помечать как секретные (`writeOnly` там, где применимо) и описывать запрет логирования.
+- `client_secret`, `code`, `access_token`, `refresh_token` считать секретами и не логировать. `writeOnly` применим к полям запроса, но не к токенам в ответе `/access_token`: иначе OpenAPI-клиенты могут удалить их из типов ответа.
 - Для `/check-token` и `/user` использовать Bearer security scheme.
 - Для `/auth/logout` использовать query-параметр `redirect`, но отметить расхождение с названием `redirect_uri` в таблице документации.
 - Не описывать внешние endpoint'ы как маршруты Spring Boot ОКО.
 
 ### 6.3. Особенность `POST /auth/logout` и `GET /auth/logout`
 
-В OpenAPI path `/auth/logout` может содержать обе операции:
+Путь `/auth/logout` встречается в двух разных контрактах:
 
-- `POST` на сервере ОКО `/api/v1` — локальный выход из ОКО;
-- `GET` на сервере ТПУ `https://oauth.tpu.ru` — глобальный выход из SSO ТПУ.
+- `POST` в контракте ОКО на сервере `/api/v1` — локальный выход из ОКО;
+- `GET` в контракте SSO ТПУ на сервере `https://oauth.tpu.ru` — глобальный выход из SSO ТПУ.
 
-Это разные операции на разных серверах. Нельзя удалять одну из них из-за совпадения имени пути.
+Это разные операции на разных серверах.
 
 ---
 
@@ -590,4 +590,5 @@ URL можно зафиксировать в конфигурации прило
 - `backend/src/main/java/ru/tpu/oko/auth/api/AuthController.java`;
 - `backend/src/main/java/ru/tpu/oko/auth/service/IdentityProvider.java`;
 - `backend/src/main/java/ru/tpu/oko/auth/service/LoginService.java`;
-- `contracts/oko-openapi.yaml`.
+- [Контракт API ОКО](../../contracts/oko-openapi.yaml);
+- [Контракт внешнего SSO ТПУ](../../contracts/tpu-sso-openapi.yaml).

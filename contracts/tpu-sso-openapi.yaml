@@ -1,0 +1,356 @@
+openapi: 3.0.3
+info:
+  title: ТПУ — внешний SSO API, используемый ОКО
+  version: 0.1.0-draft
+  description: |
+    Контракт внешних операций oauth.tpu.ru для интеграции ОКО.
+    Эти маршруты предоставляет ТПУ, а не backend ОКО. См. руководство
+    [по интеграции](../docs/team/SSO_TPU_BACKEND_GUIDE.md).
+servers:
+  - url: https://oauth.tpu.ru
+    description: Внешний OAuth-сервис ТПУ
+tags:
+  - name: SSO ТПУ (внешний API)
+    description: |
+      Операции внешнего сервиса `https://oauth.tpu.ru`, вызываемые браузером или backend ОКО.
+      Это **не маршруты backend ОКО**: спецификация целиком использует внешний server.
+      `api_key` не передаётся в перечисленные OAuth-запросы. При этом текущая инструкция ТПУ включает создание
+      платформы/версии приложения (получение `api_key`) в предварительный процесс регистрации OAuth-приложения.
+      Источники: [процесс авторизации](https://devdocs.tpu.ru/books/edinaia-avtorizaciia-tpu/page/process-avtorizacii),
+      [восстановление авторизации](https://devdocs.tpu.ru/books/edinaia-avtorizaciia-tpu/page/vosstanovlenie-avtorizacii).
+    externalDocs:
+      description: Официальная документация единой авторизации ТПУ
+      url: https://devdocs.tpu.ru/books/edinaia-avtorizaciia-tpu
+paths:
+  /authorize:
+    get:
+      tags: [SSO ТПУ (внешний API)]
+      operationId: tpuAuthorize
+      summary: Начать авторизацию пользователя в ТПУ
+      description: |
+        Браузер пользователя перенаправляется на этот endpoint. После успешного входа ТПУ возвращает браузер
+        на `redirect_uri` с одноразовым `code` и исходным `state`. Если пользователь уже авторизован в ТПУ,
+        повторный ввод логина и пароля может не потребоваться.
+
+        Для ОКО используется `response_type=code` (server-side Authorization Code flow). Домен и URI возврата
+        должны быть зарегистрированы в настройках приложения ТПУ. `state` должен быть случайным, одноразовым,
+        привязанным к сессии инициировавшего вход пользователя и проверенным в callback.
+      security: []
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          description: Идентификатор OAuth-клиента из настроек приложения ТПУ.
+          schema:
+            type: string
+          example: "my-app-id-123456"
+        - name: redirect_uri
+          in: query
+          required: true
+          description: Точный callback URL ОКО, зарегистрированный в доверенных URI приложения ТПУ.
+          schema:
+            type: string
+            format: uri
+          example: https://oko.example.ru/api/v1/auth/callback
+        - name: response_type
+          in: query
+          required: true
+          description: Для серверного потока ОКО — `code`.
+          schema:
+            type: string
+            enum: [code]
+        - name: state
+          in: query
+          required: true
+          description: Случайное значение для защиты от CSRF; должно быть проверено при возврате в ОКО.
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Редирект браузера на `redirect_uri`; параметры `code` и `state` передаются в query.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        default:
+          description: Ошибка внешнего OAuth-сервиса; формат и HTTP-коды ошибок в документации ТПУ не зафиксированы.
+
+  /access_token:
+    get:
+      tags: [SSO ТПУ (внешний API)]
+      operationId: tpuIssueOrRefreshToken
+      summary: Получить или обновить токен ТПУ
+      description: |
+        Один endpoint обслуживает несколько grant type. Для пользовательского входа ОКО используется
+        `grant_type=authorization_code`: передаются `code`, `state` и тот же `redirect_uri`, что был в `/authorize`.
+        Для продления токена используется `grant_type=refresh_token` и `refresh_token`; повторный вход пользователя
+        не требуется. Разрешённые grant type зависят от настроек OAuth-приложения ТПУ.
+
+        В документации ТПУ также описан отложенный (системный) сценарий: при пропуске получения `code` передаются
+        `timestamp` и `sig`; `sig` рассчитывается секретным ключом доверенного приложения, а не `api_key`/ключом версии.
+        Это не замена персональному токену студента: тип такого токена — `system`, тогда как для входа пользователя
+        нужен `personal`.
+
+        **Безопасность:** опубликованный процесс ТПУ указывает метод GET, поэтому `client_secret` и токены попадают
+        в query string. Не журналировать полный URL и настроить маскирование query-параметров на reverse proxy,
+        в APM и HTTP-клиенте. Вводная страница документации ТПУ упоминает POST для обмена code, но актуальная
+        пошаговая инструкция и инструкция обновления указывают GET; поддержку POST необходимо отдельно подтвердить.
+
+        **Сроки:** страницы ТПУ расходятся в сроке жизни access token (30 минут в описании сервиса и 24 часа
+        по умолчанию в описании процесса). Ориентироваться на фактический `expires_in` в ответе. Refresh token
+        указан со сроком жизни около одной недели.
+      security: []
+      parameters:
+        - name: client_id
+          in: query
+          required: true
+          description: Идентификатор OAuth-клиента.
+          schema:
+            type: string
+        - name: client_secret
+          in: query
+          required: true
+          description: Секрет OAuth-клиента. Чувствительное значение; не хранить на клиенте и не логировать URL.
+          schema:
+            type: string
+            format: password
+            writeOnly: true
+        - name: grant_type
+          in: query
+          required: true
+          description: '`authorization_code` для первичного пользовательского входа; `refresh_token` для обновления. Дополнительные типы могут зависеть от настроек ТПУ.'
+          schema:
+            type: string
+            example: authorization_code
+        - name: code
+          in: query
+          required: false
+          description: Одноразовый code из `/authorize`; обязателен для `grant_type=authorization_code`.
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: false
+          description: Значение state из `/authorize`; документация отмечает его как обязательное для пользовательского обмена code.
+          schema:
+            type: string
+        - name: redirect_uri
+          in: query
+          required: false
+          description: Должен совпадать с `redirect_uri`, переданным в `/authorize`; обязателен для authorization code flow.
+          schema:
+            type: string
+            format: uri
+        - name: refresh_token
+          in: query
+          required: false
+          description: Refresh token из предыдущего ответа; обязателен для `grant_type=refresh_token`.
+          schema:
+            type: string
+        - name: timestamp
+          in: query
+          required: false
+          description: Unix timestamp; требуется для описанного ТПУ сценария отложенной авторизации приложения.
+          schema:
+            type: integer
+            format: int64
+        - name: sig
+          in: query
+          required: false
+          description: Подпись GET-параметров для отложенной авторизации; требуется, если пропущен шаг получения code. Алгоритм и канонизация параметров здесь не специфицированы.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Токен выдан или обновлён.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TpuTokenResponse'
+        default:
+          description: Ошибка внешнего OAuth-сервиса; формат и HTTP-коды ошибок в документации ТПУ не зафиксированы.
+
+  /check-token:
+    get:
+      tags: [SSO ТПУ (внешний API)]
+      operationId: tpuCheckToken
+      summary: Проверить токен ТПУ
+      description: |
+        Проверяет переданный access token. В ответе ТПУ возвращает сведения о клиенте, пользователе,
+        времени создания/истечения и типе токена (`personal` или `system`). В основном пользовательском
+        сценарии ОКО endpoint может использоваться для дополнительной проверки токена; для получения профиля
+        предназначен `/user`.
+      security:
+        - tpuBearer: []
+      responses:
+        '200':
+          description: Токен действителен.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TpuTokenCheckResponse'
+        default:
+          description: Ошибка или недействительный токен; точный формат ответа в документации ТПУ не зафиксирован.
+
+  /user:
+    get:
+      tags: [SSO ТПУ (внешний API)]
+      operationId: tpuGetUser
+      summary: Получить профиль пользователя ТПУ
+      description: Возвращает профиль пользователя, связанного с Bearer access token. Пример полей взят из официальной документации ТПУ.
+      security:
+        - tpuBearer: []
+      responses:
+        '200':
+          description: Профиль пользователя.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TpuUserProfile'
+        default:
+          description: Ошибка или недействительный токен; точный формат ответа в документации ТПУ не зафиксирован.
+
+
+  /auth/logout:
+    get:
+      tags: [SSO ТПУ (внешний API)]
+      operationId: tpuLogout
+      summary: Завершить глобальную SSO-сессию ТПУ
+      description: |
+        Браузер пользователя перенаправляется на этот endpoint, после чего ТПУ завершает свою SSO-сессию
+        и перенаправляет браузер на указанный адрес. Локальную сессию ОКО нужно завершить самостоятельно
+        (например, через `POST /api/v1/auth/logout`).
+
+        В опубликованном URL параметр называется `redirect`, хотя в таблице той же инструкции он обозначен
+        как `redirect_uri`. В спецификации используется имя из URL (`redirect`); это расхождение стоит подтвердить у поддержки ТПУ.
+      security: []
+      parameters:
+        - name: redirect
+          in: query
+          required: true
+          description: URI возврата после выхода из глобальной SSO-сессии; должен быть безопасным и зарегистрированным для приложения.
+          schema:
+            type: string
+            format: uri
+          example: https://oko.example.ru/
+      responses:
+        '302':
+          description: Редирект браузера на переданный `redirect` после завершения SSO-сессии.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        default:
+          description: Ошибка внешнего OAuth-сервиса; формат и HTTP-коды ошибок в документации ТПУ не зафиксированы.
+
+
+components:
+  securitySchemes:
+    tpuBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Access token, выданный внешним SSO ТПУ (`oauth.tpu.ru`).
+  schemas:
+    # ── Внешний SSO ТПУ ──
+    TpuTokenResponse:
+      type: object
+      description: |
+        Ответ на выдачу/обновление токена. ТПУ сообщает access_token, expires_in (секунды)
+        и refresh_token; документация не фиксирует дополнительные поля ответа.
+      required: [access_token, expires_in, refresh_token]
+      properties:
+        access_token:
+          type: string
+          description: Токен доступа; передавать далее только как Bearer.
+        expires_in:
+          type: integer
+          format: int64
+          description: Время жизни access_token в секундах; использовать фактическое значение ответа.
+          example: 86400
+        refresh_token:
+          type: string
+          description: Токен обновления; документация ТПУ указывает срок действия около недели.
+
+    TpuTokenCheckResponse:
+      type: object
+      required: [message, body]
+      properties:
+        message:
+          type: string
+          example: Valid
+        body:
+          $ref: '#/components/schemas/TpuTokenInfo'
+
+    TpuTokenInfo:
+      type: object
+      required: [created, expired, client_id, type]
+      properties:
+        created:
+          type: string
+          description: Дата и время создания токена в формате ответа ТПУ.
+          example: '2025-07-21 09:32:26'
+        expired:
+          type: string
+          description: Дата и время истечения токена в формате ответа ТПУ.
+          example: '2025-07-22 09:32:26'
+        client_id:
+          type: string
+        type:
+          type: string
+          enum: [personal, system]
+          description: personal — пользовательский вход; system — токен доверенного приложения.
+        user_id:
+          description: Может отсутствовать у системного токена. Для персонального входа нужен user_id и/или lichnost_id.
+          type: integer
+          format: int64
+        lichnost_id:
+          type: integer
+          format: int64
+          description: Идентификатор личности в ТПУ.
+        username:
+          type: string
+          description: Логин пользователя ТПУ.
+
+    TpuUserProfile:
+      type: object
+      description: |
+        Профиль из `GET https://oauth.tpu.ru/user`; поля отражают опубликованный пример ответа.
+        В примере ответа нет роли пользователя (студент/сотрудник), учебной группы или подразделения.
+      properties:
+        user_id:
+          type: integer
+          format: int64
+        lichnost_id:
+          type: integer
+          format: int64
+        elements:
+          type: object
+          properties:
+            familiya:
+              type: string
+              description: Фамилия (имя поля в исходном ответе ТПУ).
+            imya:
+              type: string
+              description: Имя (имя поля в исходном ответе ТПУ).
+            otchestvo:
+              type: string
+              description: Отчество (имя поля в исходном ответе ТПУ).
+        full_name:
+          type: string
+        last_name:
+          type: string
+        first_name:
+          type: string
+        patronymic:
+          type: string
+        email:
+          type: string
+          format: email
+        login:
+          type: string
+        message:
+          type: string
+          example: OK
